@@ -748,5 +748,329 @@ print(json.dumps(METADATA))
                 self.assertEqual(self.metadata_challenge_probe(request), 41)
 
 
+
+    def capability_request(self, capabilities=("authtype", "state"), **target):
+        return "".join("capability[]=" + value + "\n" for value in capabilities) + self.challenge_request(
+            ('Basic realm="fixture"',), **target)
+
+    def test_actual_helper_and_git_fill_accept_only_known_capability_advertisements(self):
+        for capabilities in (("authtype",), ("state",), ("authtype", "state"),
+                             ("state", "authtype", "state")):
+            for git in (False, True):
+                with self.subTest(capabilities=capabilities, git=git):
+                    result = self.invoke(self.capability_request(capabilities), git=git)
+                    self.assert_secret(result)
+                    if not git:
+                        self.assertNotIn("capability", result.stdout)
+                        self.assertNotIn("authtype", result.stdout)
+                        self.assertNotIn("state", result.stdout)
+
+    def test_capabilities_preserve_target_action_token_and_identity_rejections(self):
+        for target in ({"protocol": "http"}, {"host": "github.com.evil"},
+                       {"host": "github.com:443"}, {"path": "other/tiforth"},
+                       {"path": "zanmato1984/tiforth.git/extra"}):
+            for git in (False, True):
+                self.assert_rejected(self.invoke(self.capability_request(**target), git=git))
+        request = self.capability_request()
+        for key in ("protocol", "host", "path", "username"):
+            line = key + "=" + {"protocol": "https", "host": "github.com",
+                                "path": "zanmato1984/tiforth", "username": "x"}[key] + "\n"
+            # Identity duplicates remain invalid; advertisements are arrays.
+            duplicate = request.replace("\n\n", "\n" + line + "\n")
+            if key == "username":
+                duplicate = duplicate.replace("\n\n", "\n" + line + "\n")
+            self.assert_rejected(self.invoke(duplicate))
+        for action in ("store", "erase", "", "get;false"):
+            self.assert_rejected(self.invoke(request, action=action))
+        for token in (None, "", "bad\nvalue", "bad\rvalue"):
+            env = dict(self.env)
+            if token is None:
+                env.pop("TIFORTH_DEPENDENCY_TOKEN")
+            else:
+                env["TIFORTH_DEPENDENCY_TOKEN"] = token
+            self.assert_rejected(self.invoke(request, env=env))
+
+    def test_unknown_or_malformed_capability_and_negotiated_fields_fail_closed(self):
+        for capabilities in (("",), ("future",), ("AUTHTYPE",), ("state=other",),
+                             ("authtype", "future"), ("state\r",), ("state\0",)):
+            self.assert_rejected(self.invoke(self.capability_request(capabilities)))
+        for line in ("capability=state\n", "capability[]\n", "state[]=opaque\n",
+                     "authtype=Bearer\n", "credential=opaque\n", "continue=1\n",
+                     "ephemeral=1\n", "password=opaque\n"):
+            self.assert_rejected(self.invoke(line + self.capability_request()))
+        # Same total-line and per-line bounds apply to advertisements.
+        self.assert_secret(self.invoke(self.capability_request(("state",) * 27)))
+        self.assert_rejected(self.invoke(self.capability_request(("state",) * 28)))
+        self.assert_rejected(self.invoke(self.capability_request(("x" * 4096,))))
+        self.assert_rejected(self.invoke(self.capability_request().rstrip("\n")))
+
+    def test_actual_metadata_block_handles_http_capabilities_and_rejects_foreign_target(self):
+        self.assertEqual(self.metadata_challenge_probe(self.capability_request()), 0)
+        self.assertEqual(self.metadata_challenge_probe(self.capability_request(path="other/tiforth")), 41)
+
+
+
+
+    def test_rejected_capability_requests_do_not_read_the_token(self):
+        import io
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("credential_no_token_probe", self.helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        class TokenReadForbidden(dict):
+            def get(self, key, default=None):
+                raise AssertionError("token read sentinel")
+
+        def call(request, action="get"):
+            stdin = io.TextIOWrapper(io.BytesIO(request.encode()))
+            stdout = io.StringIO()
+            with mock.patch.object(module.os, "environ", TokenReadForbidden()), \
+                 mock.patch.object(module.sys, "stdin", stdin), \
+                 mock.patch.object(module.sys, "stdout", stdout):
+                result = module.main([action])
+            self.assertEqual(stdout.getvalue(), "")
+            return result
+
+        for request, action in ((self.capability_request(("future",)), "get"),
+                                (self.capability_request(path="other/tiforth"), "get"),
+                                (self.capability_request(), "store"),
+                                (self.capability_request(), "erase"),
+                                ("capability[]=state\r\n" + self.request(), "get")):
+            self.assertEqual(call(request, action), 1)
+        # Positive control proves the sentinel is reached only after acceptance.
+        with self.assertRaisesRegex(AssertionError, "token read sentinel"):
+            call(self.capability_request())
+
+
+class CredentialHttpsFetchTests(unittest.TestCase):
+    """Real Git HTTP authentication, no external network or real credential.
+
+    The CONNECT fixture terminates TLS itself and never forwards connections.
+    Its certificate is trusted only by the synthetic destination repository.
+    Cargo remains a mock; its Git child uses the CLI argv/env path Cargo uses.
+    """
+
+    def setUp(self):
+        import base64
+        import http.server
+        import ssl
+        import threading
+
+        self.temp = tempfile.TemporaryDirectory(prefix="native-https-fetch-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.token = "DUMMY_HTTPS_FETCH_CREDENTIAL_9086"
+        self.helper = SCRIPTS / "tiforth-dependency-credential.py"
+        self.git_binary = shutil.which("git")
+        self.assertIsNotNone(self.git_binary, "Git is required for the HTTPS regression")
+        self.env = {"PATH": os.environ["PATH"], "HOME": str(self.root),
+                    "XDG_CONFIG_HOME": str(self.root / "config"),
+                    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "false",
+                    "PYTHONDONTWRITEBYTECODE": "1", "NO_PROXY": "", "no_proxy": "",
+                    "TIFORTH_DEPENDENCY_TOKEN": self.token,
+                    "PYTHONPATH": str(Path(guard.tomllib.__file__).resolve().parent.parent)}
+        bare = self.root / "www/zanmato1984/tiforth"
+        bare.parent.mkdir(parents=True)
+        self.git("init", "--bare", str(bare))
+        tree = self.git("--git-dir", str(bare), "hash-object", "-w", "-t", "tree",
+                        "--stdin", input="")
+        self.commit = self.git("--git-dir", str(bare), "-c", "user.name=Fixture",
+                               "-c", "user.email=fixture@example.invalid",
+                               "commit-tree", tree, input="fixture\n")
+        self.git("--git-dir", str(bare), "update-ref", "refs/heads/main", self.commit)
+        self.git("--git-dir", str(bare), "update-server-info")
+        self.dest = self.root / "dest"
+        self.git("init", "--bare", str(self.dest))
+        cert, key = self.root / "cert.pem", self.root / "key.pem"
+        result = subprocess.run(
+            ["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+             "-keyout", str(key), "-out", str(cert), "-days", "1",
+             "-subj", "/CN=github.com", "-addext", "subjectAltName=DNS:github.com"],
+            cwd=self.root, env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls.load_cert_chain(cert, key)
+        expected = "Basic " + base64.b64encode(("x-access-token:" + self.token).encode()).decode()
+        self.http_events = []
+        root, events = self.root, self.http_events
+
+        class RepositoryHandler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=str(root / "www"), **kwargs)
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                authenticated = self.headers.get("Authorization") == expected
+                events.append({"path": self.path, "authenticated": authenticated})
+                if not authenticated:
+                    self.send_response(401)
+                    self.send_header("WWW-Authenticate", 'Basic realm="fixture"')
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                super().do_GET()
+
+        class LoopbackProxy(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_CONNECT(self):
+                if self.path != "github.com:443":
+                    self.send_error(403)
+                    return
+                self.send_response(200, "Connection established")
+                self.end_headers()
+                self.wfile.flush()
+                with tls.wrap_socket(self.connection, server_side=True) as connection:
+                    RepositoryHandler(connection, self.client_address, self.server)
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), LoopbackProxy)
+        thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        thread.start()
+
+        def stop_server():
+            self.server.shutdown()
+            self.server.server_close()
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive(), "loopback server did not stop")
+
+        self.addCleanup(stop_server)
+        # This configuration exists only in the fresh synthetic bare repository.
+        self.git("-C", str(self.dest), "config", "http.proxy",
+                 "http://127.0.0.1:" + str(self.server.server_port))
+        self.git("-C", str(self.dest), "config", "http.sslCAInfo", str(cert))
+        self.git("-C", str(self.dest), "config", "http.followRedirects", "false")
+        self.request_log = self.root / "requests.jsonl"
+        recorder = self.root / "recorder.py"
+        recorder.write_text("""import json,os,subprocess,sys
+from pathlib import Path
+data=sys.stdin.buffer.read()
+r=subprocess.run([sys.executable,'-B',sys.argv[1],*sys.argv[2:]],input=data,capture_output=True)
+event={'action':sys.argv[2:], 'returncode':r.returncode}
+if sys.argv[2:]==['get']:
+ event['request']=data.decode()
+with Path(os.environ['REQUEST_LOG']).open('a') as f: f.write(json.dumps(event)+'\\n')
+sys.stdout.buffer.write(r.stdout)
+sys.stderr.buffer.write(r.stderr)
+sys.exit(r.returncode)
+""")
+        self.env.update(
+            REQUEST_LOG=str(self.request_log),
+            GIT_CONFIG_COUNT="3", GIT_CONFIG_KEY_0="credential.helper", GIT_CONFIG_VALUE_0="",
+            GIT_CONFIG_KEY_1="credential.useHttpPath", GIT_CONFIG_VALUE_1="true",
+            GIT_CONFIG_KEY_2="credential.helper",
+            GIT_CONFIG_VALUE_2="!" + shlex.quote(sys.executable) + " -B " + shlex.quote(str(recorder))
+            + " " + shlex.quote(str(self.helper)))
+
+    def git(self, *args, input=None):
+        result = subprocess.run([self.git_binary, *args], cwd=self.root, env=self.env,
+                                input=input, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip()
+
+    def fetch_command(self, path="zanmato1984/tiforth"):
+        return [self.git_binary, "-c", "core.fsmonitor=false", "fetch", "--no-tags",
+                "--quiet", "--force", "--update-head-ok", "https://github.com/" + path,
+                "+" + self.commit + ":refs/commit/" + self.commit]
+
+    def fetch(self, *, path="zanmato1984/tiforth", env=None):
+        env = dict(self.env if env is None else env, GIT_DIR=str(self.dest))
+        return subprocess.run(self.fetch_command(path), cwd=self.dest, env=env,
+                              capture_output=True, text=True, timeout=30)
+
+    def test_real_https_fetch_advertises_capabilities_and_verifies_exact_object(self):
+        result = self.fetch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.git("-C", str(self.dest), "rev-parse",
+                                  "refs/commit/" + self.commit), self.commit)
+        requests = [json.loads(line) for line in self.request_log.read_text().splitlines()]
+        get = next(r for r in requests if r["action"] == ["get"])
+        self.assertEqual(get["returncode"], 0)
+        for field in ("capability[]=authtype", "capability[]=state", "protocol=https",
+                      "host=github.com", "path=zanmato1984/tiforth",
+                      'wwwauth[]=Basic realm="fixture"'):
+            self.assertIn(field, get["request"].splitlines())
+        self.assertTrue(any(r["action"] == ["store"] and r["returncode"] != 0 for r in requests))
+        self.assertFalse(self.http_events[0]["authenticated"])
+        self.assertTrue(any(e["authenticated"] for e in self.http_events))
+        self.assertNotIn(self.token, result.stdout + result.stderr + self.request_log.read_text())
+
+    def test_real_https_fetch_missing_helper_token_and_foreign_target_never_authenticate(self):
+        for case in ("helper", "token", "target"):
+            with self.subTest(case=case):
+                self.http_events.clear()
+                env = dict(self.env)
+                if case == "helper":
+                    env["GIT_CONFIG_COUNT"] = "2"
+                if case == "token":
+                    env.pop("TIFORTH_DEPENDENCY_TOKEN")
+                result = self.fetch(env=env, path="other/tiforth" if case == "target" else "zanmato1984/tiforth")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertTrue(self.http_events, "fixture did not receive the unauthenticated request")
+                self.assertFalse(any(e["authenticated"] for e in self.http_events))
+                self.assertIn("terminal prompts disabled", result.stderr)
+                self.assertNotIn(self.token, result.stdout + result.stderr)
+
+    def test_actual_metadata_shell_fetches_and_unsets_token_before_identity_guard(self):
+        workspace = self.root / "rust"
+        for rel in ("Cargo.toml", "Cargo.lock", f"crates/{guard.BRIDGE}/Cargo.toml",
+                    f"crates/{guard.SERVER}/Cargo.toml"):
+            target = workspace / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(SOURCE / rel, target)
+        scripts = workspace / "scripts"
+        scripts.mkdir()
+        shutil.copyfile(self.helper, scripts / self.helper.name)
+        # Execute the real guard, with a process-boundary assertion before it.
+        guard_probe = "import os,runpy\nassert 'TIFORTH_DEPENDENCY_TOKEN' not in os.environ\n"
+        guard_probe += "runpy.run_path(" + repr(str(GUARD_PATH)) + ", run_name='__main__')\n"
+        (scripts / GUARD_PATH.name).write_text(guard_probe)
+        binary = self.root / "bin"
+        binary.mkdir()
+        cargo = binary / "cargo"
+        probe = """import json,os,subprocess,sys
+assert sys.argv[1:] == ['+nightly-2026-08-22', 'metadata', '--locked', '--format-version', '1']
+assert os.environ['CARGO_NET_GIT_FETCH_WITH_CLI'] == 'true'
+assert os.environ['GIT_CONFIG_COUNT'] == '3'
+assert os.environ['TIFORTH_DEPENDENCY_TOKEN']
+env=dict(os.environ, GIT_DIR=DEST)
+for key in ('GIT_WORK_TREE','GIT_INDEX_FILE','GIT_OBJECT_DIRECTORY','GIT_ALTERNATE_OBJECT_DIRECTORIES'):
+ env.pop(key,None)
+r=subprocess.run(COMMAND,cwd=DEST,env=env,capture_output=True,text=True)
+if r.returncode:
+ sys.stderr.write(r.stderr)
+ sys.exit(r.returncode)
+print(json.dumps(METADATA))
+"""
+        probe = probe.replace("DEST", repr(str(self.dest))).replace(
+            "COMMAND", repr(self.fetch_command())).replace("METADATA", repr(synthetic_metadata(workspace)))
+        cargo.write_text("#!" + sys.executable + "\n" + probe)
+        cargo.chmod(0o755)
+        logs = self.root / "logs"
+        logs.mkdir()
+        env = dict(self.env, PATH=str(binary) + os.pathsep + self.env["PATH"],
+                   NATIVE_MEMORY_LOGS=str(logs))
+        for key in list(env):
+            if key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")) or key == "GIT_CONFIG_COUNT":
+                env.pop(key)
+        result = subprocess.run(
+            ["bash", "--noprofile", "--norc", "-c",
+             run_blocks()["Check locked native dependency identities"]],
+            cwd=workspace, env=env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr + (logs / "metadata.stderr.log").read_text())
+        self.assertTrue(json.loads((logs / "identity.log").read_text())["metadata_checked"])
+        self.assertTrue(any(e["authenticated"] for e in self.http_events))
+        self.assertEqual(self.git("-C", str(self.dest), "rev-parse",
+                                  "refs/commit/" + self.commit), self.commit)
+        for path in self.root.rglob("*"):
+            if path.is_file():
+                self.assertNotIn(self.token.encode(), path.read_bytes(), "dummy credential persisted")
+
+
 if __name__ == "__main__":
     unittest.main()

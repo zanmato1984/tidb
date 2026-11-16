@@ -32,6 +32,11 @@ def main(argv=None):
         # Ignore only after the same syntax and input bounds as every field.
         if key == "wwwauth[]":
             continue
+        # HTTP fetch advertises these capabilities even though plain
+        # `git credential fill` does not. Accept only the known advertisements;
+        # do not echo them (this helper implements neither capability).
+        if key == "capability[]" and value in {"authtype", "state"}:
+            continue
         if key in fields or key not in {"protocol", "host", "path", "username"}:
             return 1
         fields[key] = value
