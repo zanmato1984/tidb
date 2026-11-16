@@ -17,6 +17,12 @@ on:
       - 'AGENTS.md'
       - 'PLANS.md'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      host_source_sha:
+        description: Exact nonzero 40-hex commit in zanmato1984/tidb
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -27,7 +33,6 @@ concurrency:
 
 jobs:
   native-memory:
-    if: github.repository == 'zanmato1984/tidb'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     defaults:
@@ -39,12 +44,62 @@ jobs:
       CARGO_INCREMENTAL: '0'
       RUST_MIN_STACK: '33554432'
     steps:
+      - name: Validate caller context and exact host source
+        id: source
+        working-directory: .
+        env:
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_EVENT: ${{ github.event_name }}
+          CALLER_EVENT_ACTION: ${{ github.event.action }}
+          CALLER_REF: ${{ github.ref }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          EVENT_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          EVENT_SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REQUESTED_HOST_SOURCE_SHA: ${{ inputs.host_source_sha }}
+        run: |
+          set -euo pipefail
+          reject() { printf '%s\n' 'native-memory caller/source rejected' >&2; exit 1; }
+          case "$CALLER_REPOSITORY" in
+            zanmato1984/tidb)
+              case "$CALLER_EVENT" in pull_request|push|workflow_dispatch) ;; *) reject ;; esac
+              [[ "$EVENT_HEAD_REPOSITORY" == 'zanmato1984/tidb' ]] || reject
+              [[ "$CALLER_WORKFLOW_REF" == "zanmato1984/tidb/.github/workflows/tiforth-native-memory.yml@$CALLER_REF" ]] || reject
+              source_sha="$EVENT_SOURCE_SHA"
+              [[ -z "$REQUESTED_HOST_SOURCE_SHA" || "$REQUESTED_HOST_SOURCE_SHA" == "$source_sha" ]] || reject
+              ;;
+            zanmato1984/tiforth)
+              [[ "$EVENT_HEAD_REPOSITORY" == 'zanmato1984/tiforth' ]] || reject
+              case "$CALLER_EVENT" in
+                workflow_dispatch) [[ "$CALLER_REF" == refs/heads/* ]] || reject ;;
+                pull_request)
+                  case "$CALLER_EVENT_ACTION" in opened|synchronize|reopened) ;; *) reject ;; esac
+                  [[ "$CALLER_REF" =~ ^refs/pull/[1-9][0-9]*/merge$ ]] || reject
+                  ;;
+                *) reject ;;
+              esac
+              [[ "$CALLER_WORKFLOW_REF" == "zanmato1984/tiforth/.github/workflows/host-native-memory.yml@$CALLER_REF" ]] || reject
+              source_sha="$REQUESTED_HOST_SOURCE_SHA"
+              ;;
+            *) reject ;;
+          esac
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ && "$source_sha" != '0000000000000000000000000000000000000000' ]] || reject
+          printf 'source_sha=%s\n' "$source_sha" >> "$GITHUB_OUTPUT"
+
       - name: Checkout exact event head
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          repository: zanmato1984/tidb
+          ref: ${{ steps.source.outputs.source_sha }}
           persist-credentials: false
+
+      - name: Verify exact host checkout
+        working-directory: .
+        env:
+          EXPECTED_HOST_SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual_source_sha="$(git rev-parse HEAD)"
+          [[ "$actual_source_sha" == "$EXPECTED_HOST_SOURCE_SHA" ]] || { printf '%s\n' 'native-memory host checkout rejected' >&2; exit 1; }
 
       - name: Prepare diagnostics
         run: |
@@ -78,9 +133,21 @@ jobs:
           python3 scripts/test_check_tiforth_native_memory.py -v 2>&1 | tee "$NATIVE_MEMORY_LOGS/python-tests.log"
 
       - name: Check locked native dependency identities
+        env:
+          TIFORTH_DEPENDENCY_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Process-only config; never put a token in a helper command or URL.
+          printf -v credential_helper '!python3 %q' "$PWD/scripts/tiforth-dependency-credential.py"
+          export CARGO_NET_GIT_FETCH_WITH_CLI=true GIT_TERMINAL_PROMPT=0
+          export GIT_CONFIG_COUNT=3
+          export GIT_CONFIG_KEY_0=credential.helper GIT_CONFIG_VALUE_0=
+          export GIT_CONFIG_KEY_1=credential.useHttpPath GIT_CONFIG_VALUE_1=true
+          export GIT_CONFIG_KEY_2=credential.helper
+          export GIT_CONFIG_VALUE_2="$credential_helper"
+          trap 'unset TIFORTH_DEPENDENCY_TOKEN credential_helper CARGO_NET_GIT_FETCH_WITH_CLI GIT_TERMINAL_PROMPT GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 GIT_CONFIG_KEY_1 GIT_CONFIG_VALUE_1 GIT_CONFIG_KEY_2 GIT_CONFIG_VALUE_2' EXIT
           cargo +nightly-2026-08-22 metadata --locked --format-version 1 > "$NATIVE_MEMORY_LOGS/metadata.json" 2> "$NATIVE_MEMORY_LOGS/metadata.stderr.log"
+          unset TIFORTH_DEPENDENCY_TOKEN
           python3 scripts/check-tiforth-native-memory.py --workspace . --metadata "$NATIVE_MEMORY_LOGS/metadata.json" 2>&1 | tee "$NATIVE_MEMORY_LOGS/identity.log"
 
       - name: Check bridge all targets and features

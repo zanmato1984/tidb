@@ -17,6 +17,19 @@ command fails the job and leaves its logs available for diagnosis. A green run
 does not establish server startup, SQL execution, end-to-end behavior,
 performance, process-wide memory admission, or owner acceptance.
 
+The actual Linux run at host `4aaccff549bf86b273e2ad2043e4aa47d0a8f73e`
+then failed fetching private TiForth with the public host's built-in token;
+the public failure remains a failure. Public evidence is retained at
+https://github.com/zanmato1984/tiforth/issues/7#issuecomment-6923703769.
+The bounded correction makes this same native workflow reusable by an own-repo
+pull request changing the private TiForth caller file, or by an already-registered
+manual workflow in private `zanmato1984/tiforth`. GitHub associates a reusable run with
+the caller, so the existing caller `contents: read` `GITHUB_TOKEN` can read its
+own private repository. This is not a new credential or grant and cannot give
+the public host's direct token access. See GitHub's primary contracts:
+https://docs.github.com/en/actions/concepts/security/github_token and
+https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations.
+
 ## Progress
 
 
@@ -30,9 +43,39 @@ performance, process-wide memory admission, or owner acceptance.
 - [x] (2026-11-16) Repair only invalid job-level runner context. actionlint 1.7.12 rejects all three original expressions and accepts the repair; 23 Python tests pass, including all 20 original tests and actual setup-block probes. The new runtime regression fails against the original setup block. No Cargo/native builds were run by this repair builder.
 - [ ] Fresh independent review and verification, including the required default server build, cover the repaired exact head.
 - [ ] Root publishes the repaired head and observes actual remote Linux CI; owner gates remain open.
+- [x] (2026-11-16) Document the actual public-host private-Git authentication failure before preparing the bounded reusable-workflow correction.
+- [x] (2026-11-16) Retain the initial manual-only seven-product staged correction and its 35+7 local test results. It cannot bootstrap an unregistered workflow and is superseded by the bounded PR-launch correction below.
+- [x] (2026-11-16) Under the v2 envelope, add only own-repository private PR opened/synchronize/reopened events filtered to the caller workflow file; retain optional registered dispatch. Actual Bash context/checkout controls, 36 host tests, 8 explicit-host private tests and both actionlint schema/context checks pass locally. Under v3's isolated toy-Git allowance, the full private baseline 116, default combined 120 and explicit-host combined 124 tests pass on local Python 3.11.15; declared CI Python 3.12 remains unrun locally.
+- [ ] Root replaces both zero-SHA staging placeholders with the actual final host commit, then obtains fresh combined-head independent review and verification, the default Jemalloc server build, and actual private-caller Linux results.
 
 ## Surprises & Discoveries
 
+
+A newly introduced `workflow_dispatch`-only file cannot launch until the
+workflow exists on the default branch. The original staged manual-only version
+and checks are retained as superseded local evidence, not executable remote
+qualification. GitHub documents this at
+https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_dispatch.
+The effective v2 task envelope permits a narrowly filtered same-repository
+private PR trigger instead; no merge or default-branch change is authorized
+merely to register the workflow. Actual GitHub execution remains unrun.
+
+Actual local Git credential IPC terminates helper input at EOF after the last
+newline, not necessarily with a blank line. Also, a credential URL section for
+`.../tiforth` does not match the `.git` suffix. Initial fake-only protocol tests
+failed for both reasons; their raw failures are retained separately. The helper
+now accepts a complete newline-delimited request ending at EOF or a blank line.
+Process-only helper configuration applies the helper, whose own protocol/host/
+exact-path allowlist remains the sole credential release check. Both exact path
+variants pass through real Git IPC, and other targets remain rejected.
+
+An isolated-HOME metadata-shell test initially could not import the already
+installed `tomli` on the local Python 3.9 interpreter. The test now passes only
+that existing parser's import directory to its clean environment; it installs
+nothing and does not restore desktop HOME or credentials. Ubuntu 24.04's Python
+has standard-library `tomllib`. Initial checker fixture errors and the omitted
+unchanged guard in the seven-product output tree are retained as local test
+failures, not reclassified as remote CI failures.
 
 The first actual remote run of PR #17,
 https://github.com/zanmato1984/tidb/actions/runs/43905819653, rejected
@@ -65,6 +108,47 @@ failures and must not prewarm, retry, filter out, or skip them.
 ## Decision Log
 
 
+Decision: Correct initial manual-only launchability with narrowly scoped
+private `pull_request` events (`opened`, `synchronize`, `reopened`) whose path
+filter is only `.github/workflows/host-native-memory.yml`. Keep optional
+`workflow_dispatch`, documenting that it needs default-branch registration.
+Rationale: an unmerged draft PR can qualify the new caller without a default
+branch merge, write-token permission, secret inheritance or native-check
+change. The callee rejects foreign/fork PR heads rather than skipping checks.
+Date/Author: 2026-11-16, effective v2 bounded task envelope.
+
+Decision: Add `workflow_call` without replacing the own-host pull-request,
+push, or manual triggers, and keep every native command in this one workflow.
+Validate the allowed repository, event, caller workflow reference and nonzero
+40-hex source pin before checkout; checkout always names `zanmato1984/tidb`,
+then verify its actual HEAD before Cargo. Own-host pull requests must originate
+in the own host, not another repository. A private caller must be the exact
+`zanmato1984/tiforth/.github/workflows/host-native-memory.yml` workflow and must
+provide an explicit source pin. Under v2 it may be a registered manual branch
+dispatch or a pull request with a same-repository head, numeric merge ref and
+opened/synchronize/reopened action. Foreign/fork heads, mismatched refs and
+other event types fail before credential use. Rejection fails the job, rather than producing
+a skipped green check. Rationale: reusable workflows retain caller context,
+so `github.sha` must never silently select TiForth as host source.
+Date/Author: 2026-11-16, isolated private-caller CI builder.
+
+Decision: Give only the locked metadata step the caller's existing token.
+Cargo's CLI Git fetch receives process-environment Git configuration with an
+empty helper reset, `credential.useHttpPath=true`, and the checked-in Python
+helper. The helper answers only `get` for HTTPS `github.com` and the exact
+`zanmato1984/tiforth` or `.git` path; all other requests fail without credentials.
+Its stdout is Git's credential-protocol pipe, never a log. No token is placed
+in a URL, file, Git configuration, `GITHUB_ENV`, cache, artifact or later build
+step. Shell-local configuration and token variables are unset on exit.
+Rationale: fetch the unchanged real Git revision without new credentials or
+desktop authentication. Date/Author: 2026-11-16, isolated CI builder.
+
+Decision: Stage the not-yet-created host callee and source as exactly forty
+zeroes in the private caller, with explicit rejection by final qualification.
+Root must commit the host and replace both positions with that same immutable
+commit before dispatch. Staging checks are not final qualification or a Linux
+pass. No action is dispatched by this builder. Date/Author: 2026-11-16.
+
 Decision: Initialize `CARGO_HOME`, `CARGO_TARGET_DIR`, and `NATIVE_MEMORY_LOGS`
 from runtime `RUNNER_TEMP` in the existing Prepare diagnostics step, export
 them immediately, and append their concrete values to `GITHUB_ENV` for later
@@ -80,7 +164,8 @@ asset digest and the published checksum list before executing it. Rationale:
 the actual failure was a platform context rule, not a YAML or shell syntax
 error. Date/Author: 2026-11-16, isolated CI repair builder.
 
-Decision: Only the own-fork repository `zanmato1984/tidb` runs this job; checkout
+Historical decision (superseded only by the explicitly bounded private caller
+above): Only the own-fork repository `zanmato1984/tidb` runs this job; checkout
 uses the event's exact head, with credentials not persisted and only read
 permissions. Rationale: source validation requires neither upstream mutation nor
 privileged execution. Date/Author: 2026-11-16, CI builder.
@@ -97,6 +182,24 @@ first-use failures. Date/Author: 2026-11-16, CI builder.
 
 ## Outcomes & Retrospective
 
+
+The corrected private-caller candidate passes 36 host and 8 explicit-host private Python tests,
+including the unchanged original 23 tests, actual caller/source Bash execution,
+wrong checkout and Git-failure rejection, the failure-masking mutant, helper and
+real Git credential-fill fake-token controls, and the actual metadata block
+under process-only credential configuration. No sentinel enters test diagnostics,
+artifact logs, `GITHUB_ENV`, global config or any sandbox file. Both workflows
+pass actionlint 1.7.12. Final qualification rejects the staged zero pin; actual
+host commit resolution, independent final-head review/verification, required
+default server build and actual private Linux remain unrun. No claim about
+real private-Git authorization is made from these local controls. The original
+manual-only 35+7 checks remain superseded evidence, not a new workflow-launch
+claim. All 116 original private workflow tests and the combined ordinary 120
+and explicit-host 124 tests also pass, without skipping the existing snapshot
+test. That test's toy Git init/add/commit/archive is confined to isolated scratch
+under the v3 verification allowance; real repositories remain unchanged. New
+private tests use only stdlib; local Python is 3.11.15, while actual declared
+CI Python 3.12 execution remains unrun.
 
 The original four scoped products were implemented. Twenty Python tests passed, including
 execution of actual workflow blocks with failing mock Cargo commands and real
@@ -249,6 +352,26 @@ original logs; no retry can retrospectively turn the first run green. Full host,
 corpus, Arrow, RSS, SQL/E2E, performance, bulk-autonomy, merge, and owner gates
 remain outside this workflow's claim.
 
+For the cross-repository correction, first run the host Python suite (the
+original 23 tests remain), actionlint 1.7.12 on both workflows, and `bash -n`
+on every actual literal run block. Run the private control suite with
+`TIFORTH_HOST_NATIVE_WORKFLOW` naming the exact retained host workflow. The
+suite executes the real context/source checks and Git credential helper using
+only fake sentinel values, isolated HOME/config, no network, and real
+`git credential fill` subprocesses. Positive credential stdout is captured
+privately by the test process; diagnostics must not contain the sentinel.
+Missing helper/token, wrong target/action/protocol, malformed input, wrong
+caller/source checkout, and failure-masking controls must fail.
+
+Then run `python3 -B workflow/test_host_native_memory_workflow.py --qualify`
+with the same host-workflow environment. It must reject an unresolved zero
+callee/source pin. After root materializes a real host commit, the two pins
+must be identical, full nonzero 40-hex values and the action/callee references
+must remain SHA-pinned. Local fake protocol success cannot prove that GitHub
+will authorize the actual private Git fetch. Fresh final-commit review,
+verification/default server build, and actual private Linux are still required;
+the old failed public run is never relabeled passed.
+
 ## Idempotence and Recovery
 
 
@@ -257,7 +380,7 @@ uses temporary Cargo home/target paths and does not restore a cache. A failed
 job uploads bounded diagnostic logs, not binaries or credentials. Diagnose and
 fix actual failures in a new reviewed candidate; do not weaken flags or defaults.
 No deployment or external write step exists. Root alone integrates products;
-the CI repair builder writes only its three assigned product paths and private
+the private-caller builder writes only its seven assigned product paths and private
 report in fenced output, never the source snapshot.
 
 ## Artifacts and Notes
@@ -283,3 +406,10 @@ failure and the distinct passing DCO/local-290 evidence; repair runtime-only
 temporary-path setup, add schema and environment regression evidence, and
 retain new-head review/verification/remote-CI obligations without weakening
 native acceptance.
+
+Revision note (2026-11-16, private caller): Add documented existing-token
+cross-repository orchestration only. Preserve real Git TiForth
+`9628339f697252d29eea885f2eac693f2673935d`, all 13 native Rust products,
+lockfile, nightly/resource limits and all required native checks. No memory
+architecture, dependency, allocator, threshold, visibility or repository-setting
+change is authorized here. Framework/memory/owner gates remain open.
