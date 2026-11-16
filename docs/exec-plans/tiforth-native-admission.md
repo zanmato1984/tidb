@@ -19,6 +19,20 @@ This is not an Arrow route, SQL integration, global hook, or process RSS limit.
 ## Progress
 
 
+- [x] (2026-11-16, R1 repair) Read the immutable repair brief and published
+  required finding; checked the source-bound worker lease and project storage.
+- [x] (2026-11-16, R1 repair) Record the fixed total two-CAS requirement before
+  changing code. The original bbcfbcd candidate remains review-failed.
+- [x] (2026-11-16, R1 repair) Repair epoch/state filtering and retain the bounded
+  live-to-closing fallback and once-only returned publication.
+- [x] (2026-11-16, R1 repair) Demonstrate unchanged old-red/current-green regression for
+  three equal envelopes, including a closing target, and check late duplicates.
+- [x] (2026-11-16, R1 repair) Run locked crate checks, strict Clippy, example and default Jemalloc server
+  build; retain raw proof and stage exact products for independent review.
+
+The earlier implementation checklist below describes the original candidate,
+not acceptance of the R1 correction:
+
 - [x] (2026-11-16) Read host/project instructions and immutable dispatch; checked
   project storage, archive identity and unexpired lease.
 - [x] (2026-11-16) Write this plan and the native boundary document before code.
@@ -31,6 +45,13 @@ This is not an Arrow route, SQL integration, global hook, or process RSS limit.
 
 ## Surprises & Discoveries
 
+
+Published R1 (P2) found that the original release scan filtered envelope sizes
+but not epoch before read-modify-write. Three equal envelopes at epochs 1/2/3
+consume three strong compare-exchanges (CAS) for the last live envelope, or four
+when it is closing. This violates the fixed total two-CAS bound; it is not an
+observed wrong-refund or memory-safety failure. The required finding is
+https://github.com/zanmato1984/tiforth/issues/7#issuecomment-6920694343.
 
 The native Budget has no automatic refund on Drop. Its reserve and clear methods
 can lock and invoke host policy; the bridge must own it and clear only in explicit
@@ -54,6 +75,14 @@ bytes versus 36600 required), and the rebuilt current full suite passes.
 ## Decision Log
 
 
+Decision: retain at most TWO strong CAS operations TOTAL per release callback,
+not per slot. Acquire-load and filter the unique matching epoch and eligible
+live/closing state before CAS; return after its single bounded claim sequence.
+A live-to-closing race may use the second CAS. Test-only nonallocating counters
+measure the actual production claim operations while real roots are freed.
+Rationale: repair R1 without changing acceptance or replacing the production path.
+Date/Author: 2026-11-16, assigned fresh R1 repair builder.
+
 Decision: use real static service storage, separate persistent service Budget,
 finite atomic epoch records and owned per-root Budget values. Rationale: static
 TiForth services must not be fabricated with leaks, and release must never lose a
@@ -73,6 +102,30 @@ Date/Author: 2026-11-16, assigned builder.
 
 ## Outcomes & Retrospective
 
+
+R1 builder validation: the source-bound old release algorithm compiled with the
+unchanged regression and actual-CAS counting helper, then failed with exit 101:
+the third equal live envelope used 3 CAS and the closing envelope used 4.
+The repaired production path passed both unchanged tests with 1 CAS each.
+Truthful duplicates after final free and callbacks from an old epoch after slot
+reuse used 0 CAS; live native credit remained retained until actual final free
+and explicit flush. All 3 unit and 10 integration tests passed, as did locked
+check, crate formatting, all-target/all-feature strict Clippy and the public
+native example. The required actual default-feature Jemalloc server build
+passed in 110.30 seconds. Actual nightly-2026-08-22 reports rustc
+1.100.0-nightly (c656540d6), not an inferred 1.98.
+
+Only the bridge package was cleaned at each source-variant switch, and both
+old-red and current-green logs show actual recompilation. Cargo was released
+immediately after the server build. Shared target/cache and unique proof remain
+for independent reuse. The original bbcfbcd review remains failed; this repair
+requires a new exact-head independent review and separate verification.
+The unchanged 272-test native Chunk suite and original-versus-candidate cold
+comparison are reserved for that verifier, not reported passed by this builder.
+The earlier WouldBlock and stale-binary failures remain retained and unwaived.
+No host/Arrow/SQL/E2E, memory, owner, bulk or merge gate is accepted.
+
+The following observations describe the earlier implementation:
 
 The public native example performs three actual selected-Jemalloc allocations,
 retains 19632 native bytes while owners survive close, then leaves the 176-byte
@@ -110,6 +163,16 @@ pools; a managed callback may only touch pre-admitted fixed atomics.
 
 ## Plan of Work
 
+
+For the R1 correction, first edit only release handling in
+`rust/crates/tidb-tiforth-memory/src/admission.rs`. Add test-only counting at
+the actual strong-CAS boundary and real-root tests with three identical
+envelopes; exercise the third live and closing root, duplicates and slot reuse.
+Retain the same regression and counting transformation against the exact old
+bbcfbcd release algorithm in private scratch. It must compile and fail at runtime
+with more than two attempts; the repaired source must pass unchanged expectations.
+Clean only the bridge package's generated artifacts before each source-variant
+switch, so an older timestamp cannot reuse a stale negative binary.
 
 First add the crate and workspace member, using actual tidb-memory and pinned Git
 TiForth dependencies. Implement checked selected-allocator layout charging in
@@ -152,6 +215,16 @@ the workspace toolchain pin or global default.
     cargo +nightly-2026-08-22 run --locked -p tidb-tiforth-memory --example native_owned_root
     cargo +nightly-2026-08-22 nextest run --locked -p tidb-chunk --test-threads 2
     cargo +nightly-2026-08-22 build --locked -p tidb-server
+
+For the R1 regression specifically, run the following from `rust/`:
+
+    cargo +nightly-2026-08-22 test --locked -p tidb-tiforth-memory --lib last_equal_envelope_ -- --nocapture --test-threads=2
+
+Expect two passing tests and actual_release_cas=1 for both live and closing
+third equal envelopes. The retained source-bound old algorithm uses the
+byte-identical test module and counting helper but exits 101 with actual counts
+3 and 4. Its private transformation, exact source hashes, patch and raw logs
+are referenced in the repair report; do not alter the original pinned source.
 
 ## Validation and Acceptance
 
@@ -210,6 +283,13 @@ Chunk suite without changing any native fixture or expectation.
 Native-build revision: required modified-candidate default Jemalloc server build
 passed. This is build evidence only; no server startup, Arrow route, SQL/E2E,
 performance, production integrity policy or owner gate is claimed.
+
+R1 revision: repaired the fixed total two-CAS bound without acceptance changes;
+added real-root production-CAS and public native-credit regression coverage,
+clarified truthful direct low-level callbacks, and retained old-red/current-green
+proof. Only assigned bridge source/tests/docs changed; Cargo/lock/native core and
+the pinned TiForth dependency are unchanged. Fresh exact-head independent review
+and verification remain required.
 
 Handoff revision: original 13156 tracked entries and Git index/config are
 unchanged. Only the two allowed existing Cargo files changed; ten new product

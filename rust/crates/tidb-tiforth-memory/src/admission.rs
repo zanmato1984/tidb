@@ -17,6 +17,13 @@ const RETURNING: u64 = 6;
 const MASK: u64 = 7;
 const MAX_EPOCH: u64 = u64::MAX >> 3;
 
+#[cfg(test)]
+thread_local! {
+    // Counts only actual release CAS calls on this test thread. Constant TLS
+    // initialization and Cell updates allocate no storage on the heap.
+    static RELEASE_CAS_ATTEMPTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 const fn token(epoch: u64, state: u64) -> u64 {
     (epoch << 3) | state
 }
@@ -44,6 +51,13 @@ impl Slot {
         self.payload.load(Ordering::Relaxed) == request.payload_limit
             && self.header.load(Ordering::Relaxed) == request.bookkeeping_bytes
             && self.bytes.load(Ordering::Relaxed) == request.total_bytes
+    }
+
+    fn claim_returning(&self, expected: u64, returning: u64) -> Result<u64, u64> {
+        #[cfg(test)]
+        RELEASE_CAS_ATTEMPTS.with(|count| count.set(count.get() + 1));
+        self.token
+            .compare_exchange(expected, returning, Ordering::AcqRel, Ordering::Acquire)
     }
 }
 
@@ -353,34 +367,32 @@ impl<const N: usize> AdmissionV1 for NativeService<N> {
     }
 
     fn release_root(&self, request: RootRequest) {
-        // Bounded scan and at most TWO strong CAS operations. Never takes gate
-        // or native locks. Epoch is part of CAS, so late duplicate callbacks
-        // cannot mark a reused slot returned. Close is the only possible
-        // intervening state transition before the first valid release.
+        // Bounded scan and at most TWO strong CAS operations TOTAL per
+        // callback, never per slot; no gate or native locks. Filter
+        // the unique epoch/state before RMW. Epoch remains part of CAS, so a
+        // late duplicate cannot mark a reused slot returned. Only close can
+        // change an eligible live word before the first valid release.
         if request.root_epoch == 0 || request.root_epoch > MAX_EPOCH {
             return;
         }
         for slot in &self.slots {
-            if !slot.matches(request) {
+            let state = slot.token.load(Ordering::Acquire);
+            if state >> 3 != request.root_epoch
+                || !matches!(state & MASK, LIVE | CLOSING)
+                || !slot.matches(request)
+            {
                 continue;
             }
-            let first = slot.token.compare_exchange(
-                token(request.root_epoch, LIVE),
-                token(request.root_epoch, RETURNING),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
+            let first = slot.claim_returning(state, token(request.root_epoch, RETURNING));
             let released = match first {
                 Ok(_) => true,
-                Err(actual) if actual == token(request.root_epoch, CLOSING) => slot
-                    .token
-                    .compare_exchange(
-                        actual,
-                        token(request.root_epoch, RETURNING),
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    )
-                    .is_ok(),
+                Err(actual)
+                    if state == token(request.root_epoch, LIVE)
+                        && actual == token(request.root_epoch, CLOSING) =>
+                {
+                    slot.claim_returning(actual, token(request.root_epoch, RETURNING))
+                        .is_ok()
+                }
                 _ => false,
             };
             if released {
@@ -389,8 +401,10 @@ impl<const N: usize> AdmissionV1 for NativeService<N> {
                 self.releases.fetch_add(1, Ordering::Release);
                 slot.token
                     .store(token(request.root_epoch, RETURNED), Ordering::Release);
-                return;
             }
+            // Registered epochs never repeat, including after slot reuse. No
+            // other slot can match this epoch even if this claim lost a race.
+            return;
         }
     }
 }
@@ -398,6 +412,90 @@ impl<const N: usize> AdmissionV1 for NativeService<N> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn equal_envelopes_release_bound(service: &'static NativeService<3>, closing: bool) {
+        let pool = tidb_memory::ResourcePool::new_default("equal-envelopes", 1);
+        pool.start(None, 1 << 20);
+        let mut service_credit = pool.create_budget();
+        service_credit
+            .reserve(NativeService::<3>::service_bytes() as i64)
+            .unwrap();
+        service.initialize(&mut service_credit).unwrap();
+        let register = |epoch| {
+            let request = NativeService::<3>::root_request::<1, 1, 8>(epoch, 64).unwrap();
+            let mut credit = pool.create_budget();
+            credit.reserve(request.total_bytes as i64).unwrap();
+            service
+                .reserve_query::<1, 1, 8>(epoch, 64, &mut credit)
+                .unwrap();
+            request
+        };
+        let first = register(1);
+        let second = register(2);
+        let target = register(3);
+        assert_eq!(first.total_bytes, target.total_bytes);
+        assert_eq!(second.total_bytes, target.total_bytes);
+        let first_root = service.try_root::<1, 1, 8>(1).unwrap();
+        let second_root = service.try_root::<1, 1, 8>(2).unwrap();
+        let target_root = service.try_root::<1, 1, 8>(3).unwrap();
+        if closing {
+            service.request_close(3).unwrap();
+        }
+        RELEASE_CAS_ATTEMPTS.with(|count| count.set(0));
+        drop(target_root); // Actual physical header free invokes release_root.
+        let attempts = RELEASE_CAS_ATTEMPTS.with(std::cell::Cell::get);
+        println!("equal envelopes: closing={closing} target_epoch=3 actual_release_cas={attempts}");
+        assert!(
+            attempts <= 2,
+            "release must use at most TWO strong CAS TOTAL, observed {attempts}"
+        );
+        assert_eq!(service.snapshot().releases, 1);
+        assert_eq!(service.snapshot().frees_at_last_release, 1);
+        assert_eq!(
+            pool.allocated(),
+            (NativeService::<3>::service_bytes() + 3 * target.total_bytes) as i64
+        );
+        RELEASE_CAS_ATTEMPTS.with(|count| count.set(0));
+        service.release_root(target); // Truthful duplicate after physical free.
+        assert_eq!(RELEASE_CAS_ATTEMPTS.with(std::cell::Cell::get), 0);
+        assert_eq!(service.snapshot().releases, 1);
+        service.flush(3).unwrap();
+        let reused = register(4); // First two live roots force reuse of slot 3.
+        let reused_root = service.try_root::<1, 1, 8>(4).unwrap();
+        RELEASE_CAS_ATTEMPTS.with(|count| count.set(0));
+        service.release_root(target);
+        assert_eq!(RELEASE_CAS_ATTEMPTS.with(std::cell::Cell::get), 0);
+        assert_eq!(service.snapshot().releases, 1);
+        assert_eq!(service.flush(4), Err(BridgeError::PendingOwners));
+        assert_eq!(
+            pool.allocated(),
+            (NativeService::<3>::service_bytes() + 2 * target.total_bytes + reused.total_bytes)
+                as i64
+        );
+        service.request_close(4).unwrap();
+        drop(reused_root);
+        assert!(RELEASE_CAS_ATTEMPTS.with(std::cell::Cell::get) <= 2);
+        service.flush(4).unwrap();
+        drop(first_root);
+        drop(second_root);
+        service.flush(1).unwrap();
+        service.flush(2).unwrap();
+        assert_eq!(service.snapshot().releases, 4);
+        assert_eq!(service.allocator().snapshot().frees, 4);
+        assert_eq!(pool.allocated(), NativeService::<3>::service_bytes() as i64);
+    }
+
+    #[test]
+    fn last_equal_envelope_live_release_has_fixed_total_cas_bound() {
+        static SERVICE: NativeService<3> = NativeService::new();
+        equal_envelopes_release_bound(&SERVICE, false);
+    }
+
+    #[test]
+    fn last_equal_envelope_closing_release_has_fixed_total_cas_bound() {
+        static SERVICE: NativeService<3> = NativeService::new();
+        equal_envelopes_release_bound(&SERVICE, true);
+    }
 
     #[test]
     fn contention_is_bounded_and_release_notification_is_not_lost() {

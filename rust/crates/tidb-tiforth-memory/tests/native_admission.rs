@@ -320,6 +320,61 @@ fn slots_epochs_cancel_reuse_and_shutdown_are_explicit() {
 }
 
 #[test]
+fn equal_envelope_close_duplicate_and_reused_slot_preserve_native_credit() {
+    type Three = NativeService<3>;
+    static SERVICE: Three = Three::new();
+    let pool = initialize(&SERVICE);
+    let register = |epoch| {
+        let request = Three::root_request::<2, 8, 32>(epoch, 64).unwrap();
+        let mut credit = reserved(&pool, request.total_bytes);
+        SERVICE
+            .reserve_query::<2, 8, 32>(epoch, 64, &mut credit)
+            .unwrap();
+        request
+    };
+    let first = register(1);
+    let second = register(2);
+    let target = register(3);
+    assert_eq!(first.total_bytes, target.total_bytes);
+    assert_eq!(second.total_bytes, target.total_bytes);
+    let first_root: Root = SERVICE.try_root(1).unwrap();
+    let second_root: Root = SERVICE.try_root(2).unwrap();
+    let target_root: Root = SERVICE.try_root(3).unwrap();
+    SERVICE.request_close(3).unwrap();
+    assert_eq!(SERVICE.flush(3), Err(BridgeError::PendingOwners));
+    std::thread::spawn(move || drop(target_root))
+        .join()
+        .unwrap();
+    assert_eq!(SERVICE.snapshot().releases, 1);
+    assert_eq!(SERVICE.snapshot().frees_at_last_release, 1);
+    SERVICE.release_root(target); // Duplicate only after the real final free.
+    assert_eq!(SERVICE.snapshot().releases, 1);
+    SERVICE.flush(3).unwrap();
+    assert_eq!(
+        pool.allocated(),
+        (Three::service_bytes() + 2 * target.total_bytes) as i64
+    );
+    let reused = register(4);
+    let reused_root: Root = SERVICE.try_root(4).unwrap();
+    SERVICE.release_root(target); // The old epoch must not release slot 3 again.
+    assert_eq!(SERVICE.snapshot().releases, 1);
+    assert_eq!(SERVICE.flush(4), Err(BridgeError::PendingOwners));
+    assert_eq!(
+        pool.allocated(),
+        (Three::service_bytes() + 2 * target.total_bytes + reused.total_bytes) as i64
+    );
+    drop(reused_root);
+    SERVICE.flush(4).unwrap();
+    drop(first_root);
+    drop(second_root);
+    SERVICE.flush(1).unwrap();
+    SERVICE.flush(2).unwrap();
+    assert_eq!(SERVICE.snapshot().releases, 4);
+    assert_eq!(SERVICE.allocator().snapshot().frees, 4);
+    assert_eq!(pool.allocated(), Three::service_bytes() as i64);
+}
+
+#[test]
 fn cold_callbacks_and_close_allocate_nothing_with_allocating_positive_control() {
     static SERVICE: Service = Service::new();
     let pool = initialize(&SERVICE);

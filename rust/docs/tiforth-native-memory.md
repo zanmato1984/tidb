@@ -50,9 +50,12 @@ arbitrator or silently close unrelated native trackers.
 The record states are unopened, live, closing, release-notification-in-progress,
 returned, cancelled, and free. Epoch and state share one atomic word. Unopened
 close cancels before any backend entry; live close retains the envelope. Release
-claims the matching live/closing word in at most two strong compare-exchanges,
-records physical-free observations, then publishes returned. Explicit flush can
-clear only returned or unopened-cancelled credit, once. Epoch values never repeat.
+first acquire-loads and filters the unique matching epoch and live/closing state.
+It claims that word with at most two strong compare-exchanges TOTAL per callback,
+including a possible live-to-closing race, regardless of equal-sized envelopes
+in other slots. It records physical-free observations, then publishes returned.
+Explicit flush can clear only returned or unopened-cancelled credit, once.
+Epoch values never repeat.
 
 ## Physical allocation
 
@@ -65,6 +68,11 @@ fragmentation, native allocator global metadata or process RSS.
 
 The checked bridge wrappers are the supported route. Direct use of low-level
 TiForth RawAllocator/RetainedLayout APIs remains the downstream caller's own
-accounting responsibility. No Arrow MetadataPermit, HostHardLimit, M01–M12,
+accounting responsibility. Direct low-level AdmissionV1 callback callers likewise
+must send truthful accounting notifications: a release_root notification must
+report that the final physical owner has already been freed. NativeRoot and
+NativeQuery enforce their own checked ownership route; they do not validate
+arbitrary manual callbacks.
+No Arrow MetadataPermit, HostHardLimit, M01–M12,
 production integrity/fail-stop decision, architecture acceptance or owner memory
 gate is established by this slice.

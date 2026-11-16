@@ -15,6 +15,12 @@ flush clears native query Budget after the actual last physical owner and root
 header are freed, or after unopened cancellation. Static service credit remains
 charged, including after shutdown. Forgotten owners retain the envelope.
 
+Release scans filter epoch/state before claiming the one matching record and
+use at most two strong CAS operations total, even with equal-sized envelopes.
+Direct low-level AdmissionV1 callbacks, like RawAllocator use, require truthful
+downstream accounting; the checked NativeRoot/NativeQuery guarantees do not
+validate arbitrary manual release notifications.
+
 From the Rust workspace:
 
     cargo +nightly-2026-08-22 run --locked -p tidb-tiforth-memory --example native_owned_root

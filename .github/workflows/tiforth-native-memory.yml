@@ -1,0 +1,134 @@
+name: TiForth native memory
+
+on:
+  pull_request:
+    paths:
+      - 'rust/**'
+      - '.github/workflows/tiforth-native-memory.yml'
+      - 'docs/exec-plans/tiforth-native-memory-ci.md'
+      - 'AGENTS.md'
+      - 'PLANS.md'
+  push:
+    branches: ['tiforth/**', 'task/**', 'codex/**']
+    paths:
+      - 'rust/**'
+      - '.github/workflows/tiforth-native-memory.yml'
+      - 'docs/exec-plans/tiforth-native-memory-ci.md'
+      - 'AGENTS.md'
+      - 'PLANS.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tiforth-native-memory-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-memory:
+    if: github.repository == 'zanmato1984/tidb'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      RUST_MIN_STACK: '33554432'
+      CARGO_HOME: ${{ runner.temp }}/tiforth-native-memory-cargo
+      CARGO_TARGET_DIR: ${{ runner.temp }}/tiforth-native-memory-target
+      NATIVE_MEMORY_LOGS: ${{ runner.temp }}/tiforth-native-memory-logs
+    steps:
+      - name: Checkout exact event head
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Prepare diagnostics
+        run: |
+          set -euo pipefail
+          mkdir -p "$NATIVE_MEMORY_LOGS"
+          df -h . "$HOME" | tee "$NATIVE_MEMORY_LOGS/disk-before.log"
+          git rev-parse HEAD | tee "$NATIVE_MEMORY_LOGS/source-head.log"
+
+      - name: Install native build prerequisites
+        run: |
+          set -euo pipefail
+          sudo apt-get update 2>&1 | tee "$NATIVE_MEMORY_LOGS/apt-update.log"
+          sudo apt-get install --no-install-recommends -y build-essential cmake pkg-config libssl-dev protobuf-compiler python3 2>&1 | tee "$NATIVE_MEMORY_LOGS/apt-install.log"
+
+      - name: Install exact native nightly and test runner
+        run: |
+          set -euo pipefail
+          rustup toolchain install nightly-2026-08-22 --profile minimal --component rustfmt --component clippy --no-self-update 2>&1 | tee "$NATIVE_MEMORY_LOGS/toolchain-install.log"
+          cargo +nightly-2026-08-22 install --locked cargo-nextest --version 0.9.152 --root "$RUNNER_TEMP/tiforth-native-memory-nextest" 2>&1 | tee "$NATIVE_MEMORY_LOGS/nextest-install.log"
+          echo "$RUNNER_TEMP/tiforth-native-memory-nextest/bin" >> "$GITHUB_PATH"
+          rustc +nightly-2026-08-22 -Vv | tee "$NATIVE_MEMORY_LOGS/rustc.log"
+          "$RUNNER_TEMP/tiforth-native-memory-nextest/bin/cargo-nextest" --version | tee "$NATIVE_MEMORY_LOGS/nextest-version.log"
+
+      - name: Test identity guard and shell failure propagation
+        run: |
+          set -euo pipefail
+          python3 scripts/test_check_tiforth_native_memory.py -v 2>&1 | tee "$NATIVE_MEMORY_LOGS/python-tests.log"
+
+      - name: Check locked native dependency identities
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-22 metadata --locked --format-version 1 > "$NATIVE_MEMORY_LOGS/metadata.json" 2> "$NATIVE_MEMORY_LOGS/metadata.stderr.log"
+          python3 scripts/check-tiforth-native-memory.py --workspace . --metadata "$NATIVE_MEMORY_LOGS/metadata.json" 2>&1 | tee "$NATIVE_MEMORY_LOGS/identity.log"
+
+      - name: Check bridge all targets and features
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-22 check --locked -p tidb-tiforth-memory --all-targets --all-features 2>&1 | tee "$NATIVE_MEMORY_LOGS/bridge-check.log"
+
+      - name: Check scoped formatting
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-22 fmt --package tidb-tiforth-memory -- --check 2>&1 | tee "$NATIVE_MEMORY_LOGS/bridge-fmt.log"
+
+      - name: Check strict bridge Clippy
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-22 clippy --locked -p tidb-tiforth-memory --all-targets --all-features --no-deps -- -D warnings 2>&1 | tee "$NATIVE_MEMORY_LOGS/bridge-clippy.log"
+
+      - name: Run complete bridge tests without retries
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-22 nextest run --locked -p tidb-tiforth-memory --all-features --test-threads 2 --no-fail-fast --retries 0 2>&1 | tee "$NATIVE_MEMORY_LOGS/bridge-tests.log"
+          cargo +nightly-2026-08-22 test --locked -p tidb-tiforth-memory --all-features --doc 2>&1 | tee "$NATIVE_MEMORY_LOGS/bridge-doc-tests.log"
+
+      - name: Run public native owned root example
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-22 run --locked -p tidb-tiforth-memory --example native_owned_root 2>&1 | tee "$NATIVE_MEMORY_LOGS/public-example.log"
+
+      - name: Run unchanged native Chunk suite without retries
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-22 nextest run --locked -p tidb-chunk --test-threads 2 --no-fail-fast --retries 0 2>&1 | tee "$NATIVE_MEMORY_LOGS/native-chunk-tests.log"
+
+      - name: Build required default Jemalloc server
+        run: |
+          set -euo pipefail
+          cargo +nightly-2026-08-22 build --locked -p tidb-server 2>&1 | tee "$NATIVE_MEMORY_LOGS/server-build.log"
+
+      - name: Record final disk usage
+        if: always()
+        run: |
+          set -euo pipefail
+          df -h . "$HOME" | tee "$NATIVE_MEMORY_LOGS/disk-after.log"
+
+      - name: Retain diagnostic logs even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tiforth-native-memory-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/tiforth-native-memory-logs
+          retention-days: 7
+          if-no-files-found: error
