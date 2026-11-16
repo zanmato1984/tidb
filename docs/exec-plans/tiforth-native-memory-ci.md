@@ -25,12 +25,24 @@ performance, process-wide memory admission, or owner acceptance.
 - [x] (2026-11-16) Add read-only workflow and production dependency/allocator identity guard.
 - [x] (2026-11-16) Pass 20 Python tests, actual workflow-shell failure probes, and Ruby/Psych YAML syntax parsing; no Rust build/test was run by this builder.
 - [x] (2026-11-16) Under a later metadata-only resource grant, retain the offline Cargo failure, then obtain real locked metadata on the unchanged base and pass the production guard plus nine metadata corruption controls.
-- [ ] Root integrates automation with the separate native admission repair into a new exact candidate.
-- [ ] Fresh independent review and actual locked Rust verification cover that combined candidate.
-- [ ] Root publishes an own-fork branch and observes an actual remote CI run.
+- [x] (2026-11-16) Root integrated source `29073fbc4e34a82a1e0176143adf3a119db29ef5`; independent product review and 12 local checks cover only that exact source.
+- [x] (2026-11-16) Root published PR #17; remote run 43905819653 failed workflow validation before creating any jobs. DCO passed separately; Linux native CI did not run.
+- [x] (2026-11-16) Repair only invalid job-level runner context. actionlint 1.7.12 rejects all three original expressions and accepts the repair; 23 Python tests pass, including all 20 original tests and actual setup-block probes. The new runtime regression fails against the original setup block. No Cargo/native builds were run by this repair builder.
+- [ ] Fresh independent review and verification, including the required default server build, cover the repaired exact head.
+- [ ] Root publishes the repaired head and observes actual remote Linux CI; owner gates remain open.
 
 ## Surprises & Discoveries
 
+
+The first actual remote run of PR #17,
+https://github.com/zanmato1984/tidb/actions/runs/43905819653, rejected
+`${{ runner.temp }}` in the three job-level environment values at lines 41-43.
+No jobs were created. The formal finding is
+https://github.com/zanmato1984/tidb/pull/17#pullrequestreview-5923389637.
+YAML parsing and shell probes had passed locally but do not validate GitHub's
+context-availability rules. DCO passed independently; it is not a Linux CI pass.
+Prior review and the 12 local acceptance checks apply only to
+`29073fbc4e34a82a1e0176143adf3a119db29ef5`, never the repaired head.
 
 The immutable source has seven workflow files, not the five described in the
 initial discovery summary. None invokes Cargo. The Rust toolchain is pinned to
@@ -53,6 +65,21 @@ failures and must not prewarm, retry, filter out, or skip them.
 ## Decision Log
 
 
+Decision: Initialize `CARGO_HOME`, `CARGO_TARGET_DIR`, and `NATIVE_MEMORY_LOGS`
+from runtime `RUNNER_TEMP` in the existing Prepare diagnostics step, export
+them immediately, and append their concrete values to `GITHUB_ENV` for later
+steps. Rationale: the runner context is unavailable in job-level `env`;
+`GITHUB_ENV` alone does not affect the currently executing step. This keeps all
+three paths runner-temporary without changing locked commands or source.
+Date/Author: 2026-11-16, isolated CI repair builder.
+
+Decision: Validate this workflow with real actionlint 1.7.12 context/schema
+checking as well as YAML parsing and actual Bash execution. Obtain its prebuilt
+binary from the official rhysd/actionlint release and verify both the release
+asset digest and the published checksum list before executing it. Rationale:
+the actual failure was a platform context rule, not a YAML or shell syntax
+error. Date/Author: 2026-11-16, isolated CI repair builder.
+
 Decision: Only the own-fork repository `zanmato1984/tidb` runs this job; checkout
 uses the event's exact head, with credentials not persisted and only read
 permissions. Rationale: source validation requires neither upstream mutation nor
@@ -71,7 +98,7 @@ first-use failures. Date/Author: 2026-11-16, CI builder.
 ## Outcomes & Retrospective
 
 
-The four scoped products are implemented. Twenty Python tests pass, including
+The original four scoped products were implemented. Twenty Python tests passed, including
 execution of actual workflow blocks with failing mock Cargo commands and real
 production-guard rejection; YAML parsing succeeds. The actual locked base-source
 metadata passes the same guard, and nine deliberate metadata corruptions fail.
@@ -81,6 +108,19 @@ failure is preserved. No live CI, Rust build/test, combined-head verification,
 independent review, or owner gate has passed as a result of this builder work.
 The separate native admission repair owns production code; this automation does
 not alter its fixed two-CAS bound.
+
+The later CI-only repair changes this workflow, its existing Python tests, and
+this plan. actionlint 1.7.12 reports exactly three disallowed `runner` contexts
+at original lines 41-43 and exits 1; the repaired workflow exits 0. All 20 prior
+tests plus three runtime environment tests pass (23 total). The new positive
+environment test fails on the original setup block. The runtime probes execute
+the actual setup block using a fresh temporary root containing spaces and a
+clearly synthetic checkout identity. They verify immediate exported values in
+a child process, concrete `GITHUB_ENV` records loaded for the next step, three
+isolated directories and diagnostic logs, and nonzero exits on missing runner
+temp or failed environment persistence. These are local CI-control results,
+not Rust execution or remote Linux success. Fresh independent review,
+new-head verification, default server build, and actual remote CI are pending.
 
 ## Context and Orientation
 
@@ -131,13 +171,36 @@ incremental compilation is disabled, and native frontend/stack settings remain.
 There is no persistent cache or build-artifact upload; only logs/metadata are
 uploaded with seven-day retention, including on failure.
 
+The repair milestone removes only the three invalid job-level temporary-path
+values. `Prepare diagnostics` exports them from `RUNNER_TEMP`, appends concrete
+values to `GITHUB_ENV`, then creates their directories before logging. Exports
+make the values immediately visible to this step's subprocesses; `GITHUB_ENV`
+is the runner's line-based environment handoff to subsequent steps, not a
+shell script to expand later. The artifact upload's step-level `runner.temp`
+expression remains valid. The three existing job-level resource limits and all
+locked native commands, defaults, permissions, filters, and failure behavior
+remain unchanged.
+
 ## Concrete Steps
 
 
 From the repository root, run the non-Cargo checks:
 
-    python3 rust/scripts/test_check_tiforth_native_memory.py -v
-    python3 rust/scripts/check-tiforth-native-memory.py --workspace rust --source-only
+    PYTHONDONTWRITEBYTECODE=1 python3 -B rust/scripts/test_check_tiforth_native_memory.py -v
+    PYTHONDONTWRITEBYTECODE=1 python3 -B rust/scripts/check-tiforth-native-memory.py --workspace rust --source-only
+    actionlint -shellcheck= -pyflakes= .github/workflows/tiforth-native-memory.yml
+
+The repair used pinned actionlint 1.7.12 from
+https://github.com/rhysd/actionlint/releases/tag/v1.7.12, installed only in
+private task scratch, not globally. Download the matching official prebuilt
+archive and checksum file; verify the archive's SHA-256 against both the release
+asset digest and the checksum file before extraction. `actionlint -version`
+must identify 1.7.12. The two empty optional linter flags disable integrations
+with external shellcheck/pyflakes executables, not actionlint's YAML/schema or
+GitHub context checks. Run against only this workflow; legacy workflows are
+outside this repair. Expect no actionlint diagnostics and 23 passing Python
+tests. On the original exact `29073fbc4e34a82a1e0176143adf3a119db29ef5`
+workflow, actionlint must exit nonzero for the three job-level `runner` contexts.
 
 Python 3.11 or later uses standard-library `tomllib`; older Python 3.9/3.10 needs
 already-installed `tomli`. Ubuntu 24.04's Python provides `tomllib`. The test
@@ -146,7 +209,7 @@ suite needs Bash and locates the checked-in workflow relative to its script.
 From `rust/`, with required native tools and nextest installed, execute:
 
     cargo +nightly-2026-08-22 metadata --locked --format-version 1 > native-memory-metadata.json
-    python3 scripts/check-tiforth-native-memory.py --workspace . --metadata native-memory-metadata.json
+    PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/check-tiforth-native-memory.py --workspace . --metadata native-memory-metadata.json
     cargo +nightly-2026-08-22 check --locked -p tidb-tiforth-memory --all-targets --all-features
     cargo +nightly-2026-08-22 fmt --package tidb-tiforth-memory -- --check
     cargo +nightly-2026-08-22 clippy --locked -p tidb-tiforth-memory --all-targets --all-features --no-deps -- -D warnings
@@ -171,7 +234,13 @@ CI. A source-only success must clearly say that no metadata was checked. The
 workflow-shell probes must observe a nonzero exit when Cargo fails even though
 `tee` succeeds, and when the real guard rejects otherwise successfully emitted
 metadata. YAML must parse with an available real parser; parsing is not proof
-that GitHub has run the job.
+that GitHub has run the job. Real actionlint schema/context checks must reject
+the exact original workflow and accept the repaired workflow. Every actual
+literal run block must also pass `bash -n`. The environment regression must
+execute `Prepare diagnostics`, verify immediate exports and next-step records
+without recursive shell expansion, and reject setup failures. These checks
+complement, rather than replace, the original Cargo/tee, second-doctest, and
+production-guard failure propagation tests.
 
 Fresh combined-head verification must run actual metadata, all listed Rust
 commands, and independent review. Remote CI acceptance requires an observed run
@@ -187,8 +256,9 @@ Checks are repeatable and read-only with respect to tracked source. Each runner
 uses temporary Cargo home/target paths and does not restore a cache. A failed
 job uploads bounded diagnostic logs, not binaries or credentials. Diagnose and
 fix actual failures in a new reviewed candidate; do not weaken flags or defaults.
-No deployment or external write step exists. Root alone integrates the four
-products; the builder's fenced output never mutates the source snapshot.
+No deployment or external write step exists. Root alone integrates products;
+the CI repair builder writes only its three assigned product paths and private
+report in fenced output, never the source snapshot.
 
 ## Artifacts and Notes
 
@@ -207,3 +277,9 @@ or `--source-only`. Success prints a JSON identity summary and exits zero;
 rejection prints a concise diagnostic and exits nonzero. `check_source` and
 `check_metadata` are the production functions exercised by tests. No Rust API,
 Cargo manifest, lockfile, host allocator, or runtime behavior changes here.
+
+Revision note (2026-11-16): Record actual zero-job remote workflow validation
+failure and the distinct passing DCO/local-290 evidence; repair runtime-only
+temporary-path setup, add schema and environment regression evidence, and
+retain new-head review/verification/remote-CI obligations without weakening
+native acceptance.

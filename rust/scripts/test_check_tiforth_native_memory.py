@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -279,6 +280,77 @@ class GuardTests(unittest.TestCase):
                             'cat "' + str(metadata_path) + '"\nexit 0')
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("identity rejected", (self.root / "logs/identity.log").read_text())
+
+
+class WorkflowEnvironmentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="native-memory-runtime-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.runner_temp = self.root / "runner temp"
+        self.runner_temp.mkdir()
+        self.github_env = self.root / "github env"
+        self.github_env.touch()
+        binary = self.root / "bin"
+        binary.mkdir()
+        # Synthetic checkout identity: this shell probe needs no Git repository.
+        git = binary / "git"
+        git.write_text('#!/bin/bash\ntest "$*" = "rev-parse HEAD" || exit 97\n'
+                       'printf "%s\\n" "' + "1" * 40 + '"\n')
+        git.chmod(0o755)
+        self.env = dict(os.environ, RUNNER_TEMP=str(self.runner_temp),
+                        GITHUB_ENV=str(self.github_env),
+                        PATH=str(binary) + os.pathsep + os.environ["PATH"],
+                        PYTHONDONTWRITEBYTECODE="1")
+        self.expected = {
+            "CARGO_HOME": str(self.runner_temp / "tiforth-native-memory-cargo"),
+            "CARGO_TARGET_DIR": str(self.runner_temp / "tiforth-native-memory-target"),
+            "NATIVE_MEMORY_LOGS": str(self.runner_temp / "tiforth-native-memory-logs"),
+        }
+        for key in self.expected:
+            self.env.pop(key, None)
+
+    def shell(self, body, env):
+        return subprocess.run(["bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", body],
+                              cwd=self.root, env=env, capture_output=True, text=True)
+
+    def test_actual_setup_exports_immediately_and_persists_for_next_step(self):
+        # A child process sees exports, not merely unexported shell variables.
+        probe = "import json,os;print(json.dumps({k:os.environ[k] for k in " + repr(list(self.expected)) + "}))"
+        command = shlex.quote(sys.executable) + " -B -c " + shlex.quote(probe)
+        result = self.shell(run_blocks()["Prepare diagnostics"] + command, self.env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout.splitlines()[-1]), self.expected)
+        lines = self.github_env.read_text().splitlines()
+        self.assertEqual(len(lines), len(self.expected))
+        persisted = dict(line.split("=", 1) for line in lines)
+        self.assertEqual(persisted, self.expected)
+        # The runner loads GITHUB_ENV records, without shell expansion, next step.
+        result = self.shell(command, dict(self.env, **persisted))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(json.loads(result.stdout), self.expected)
+        for path in self.expected.values():
+            self.assertTrue(Path(path).is_dir())
+            self.assertEqual(Path(path).parent, self.runner_temp)
+        logs = Path(self.expected["NATIVE_MEMORY_LOGS"])
+        self.assertIn("Filesystem", (logs / "disk-before.log").read_text())
+        self.assertEqual((logs / "source-head.log").read_text(), "1" * 40 + "\n")
+        self.assertEqual(sorted(p.name for p in self.runner_temp.iterdir()),
+                         sorted(Path(p).name for p in self.expected.values()))
+
+    def test_actual_setup_missing_runner_temp_fails(self):
+        self.env.pop("RUNNER_TEMP")
+        result = self.shell(run_blocks()["Prepare diagnostics"], self.env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("RUNNER_TEMP", result.stderr)
+        self.assertEqual(self.github_env.read_text(), "")
+        self.assertEqual(list(self.runner_temp.iterdir()), [])
+
+    def test_actual_setup_environment_persistence_failure_is_not_masked(self):
+        self.env["GITHUB_ENV"] = str(self.root)  # A directory cannot receive records.
+        result = self.shell(run_blocks()["Prepare diagnostics"], self.env)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(list(self.runner_temp.iterdir()), [])
 
 
 if __name__ == "__main__":
