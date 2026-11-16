@@ -46,10 +46,36 @@ https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workf
 - [x] (2026-11-16) Document the actual public-host private-Git authentication failure before preparing the bounded reusable-workflow correction.
 - [x] (2026-11-16) Retain the initial manual-only seven-product staged correction and its 35+7 local test results. It cannot bootstrap an unregistered workflow and is superseded by the bounded PR-launch correction below.
 - [x] (2026-11-16) Under the v2 envelope, add only own-repository private PR opened/synchronize/reopened events filtered to the caller workflow file; retain optional registered dispatch. Actual Bash context/checkout controls, 36 host tests, 8 explicit-host private tests and both actionlint schema/context checks pass locally. Under v3's isolated toy-Git allowance, the full private baseline 116, default combined 120 and explicit-host combined 124 tests pass on local Python 3.11.15; declared CI Python 3.12 remains unrun locally.
-- [ ] Root replaces both zero-SHA staging placeholders with the actual final host commit, then obtains fresh combined-head independent review and verification, the default Jemalloc server build, and actual private-caller Linux results.
+- [x] (2026-11-16) Root replaced both zero-SHA staging placeholders with host `81b2b3365907e9f13b773bd3b38633c1de36d528`; the resulting private caller is `01980cc58a41757349f38697e4e9c52cffe9a37c`. Independent review of that exact pair requested changes for R1; no passing combined review or Linux/native qualification is claimed.
+
+- [x] (2026-11-16) Repair independently reproduced R1 from exact reviewed H/T `81b2b3365907e9f13b773bd3b38633c1de36d528` / `01980cc58a41757349f38697e4e9c52cffe9a37c`: add red-first actual helper/Git IPC and metadata-shell challenge controls, then ignore only syntactically valid repeatable `wwwauth[]`; all 42 host tests pass under existing Python 3.11.15 and 3.9.6. No actual Cargo, build, real auth or network Git.
+- [ ] Root integrates R1 into a new host commit, repins both private-caller references, and obtains fresh independent review and separate verification of the new exact H/T pair; required native/default server and actual private Linux checks remain pending.
 
 ## Surprises & Discoveries
 
+
+R1 was independently reproduced at reviewed host
+`81b2b3365907e9f13b773bd3b38633c1de36d528` and private caller
+`01980cc58a41757349f38697e4e9c52cffe9a37c`: Git forwards HTTP authentication
+challenge headers as repeatable `wwwauth[]` fields to credential helpers. The
+otherwise valid exact-target request failed because the helper treated this
+non-identity metadata as an unknown field. The red-first controls observed
+helper rejection, real local `git credential fill` failure, and exit 41 from
+mock Cargo in the unchanged actual metadata workflow block. This was local
+Git IPC with fake credentials, not a new remote GitHub failure.
+
+The repaired parser ignores only `wwwauth[]`, after its existing line length,
+UTF-8, newline, carriage-return and NUL validation. Repeated values and empty
+array resets carry no target identity, are never evaluated, and are not echoed
+by the helper. Identity fields still reject duplication and the exact HTTPS,
+`github.com`, and two allowed TiForth paths remain checked before token access.
+
+The local Python 3.11 suite initially launched the workflow's `python3` as the
+host's Python 3.9 while exporting the Python 3.11 standard-library parser path.
+That mixed-interpreter baseline failed before R1 changes. Keeping child
+`python3` on the same already-installed Python 3.11 made all original 36 tests
+pass; the repaired 42-test suite also passed under the host's Python 3.9 with
+its already-installed `tomli`. No interpreter or dependency was installed.
 
 A newly introduced `workflow_dispatch`-only file cannot launch until the
 workflow exists on the default branch. The original staged manual-only version
@@ -107,6 +133,15 @@ failures and must not prewarm, retry, filter out, or skip them.
 
 ## Decision Log
 
+
+Decision: Repair only standard repeatable `wwwauth[]` authentication-challenge
+metadata. Do not accept speculative additional protocol fields or change the
+credential-release boundary, workflow, source pin, Cargo files or native checks.
+Rationale: the independently reproduced R1 is a protocol compatibility defect,
+not a request for wider credential authority. The new actual helper/Git IPC and
+actual metadata-shell controls are red on the reviewed helper and green on the
+repair; wrong-target requests with challenges continue to fail closed.
+Date/Author: 2026-11-16, isolated R1 repair builder.
 
 Decision: Correct initial manual-only launchability with narrowly scoped
 private `pull_request` events (`opened`, `synchronize`, `reopened`) whose path
@@ -182,6 +217,25 @@ first-use failures. Date/Author: 2026-11-16, CI builder.
 
 ## Outcomes & Retrospective
 
+
+The bounded R1 repair passes 42 host Python tests (all original 36, including
+the original 23, plus six challenge regression methods). Three positive methods
+first failed against the original helper in 18 subcases; the same methods then
+passed against the repair. They exercise one/multiple challenges, both accepted
+paths, empty resets and literal equals/shell metacharacters through the helper,
+real Git IPC, and the unchanged actual metadata Bash block with mock Cargo.
+Wrong protocol/host/path plus challenges fail without a credential; missing or
+duplicate identities, malformed/unknown fields, non-get actions, invalid UTF-8
+and exact line/count bounds remain rejected. Both pinned actionlint checks and
+all actual host literal run blocks' Bash syntax checks pass locally.
+
+This is builder evidence on isolated materialized source, not independent review
+or verification. Root must integrate the three products into a new host commit,
+repin the private caller to that exact host commit, then obtain fresh independent
+review and a separate verifier for that new H/T pair. Real locked metadata,
+all required native commands including the default Jemalloc server build,
+actual private-caller Linux execution and owner gates remain unrun/pending.
+No real credential or network Git was used and no earlier failure becomes green.
 
 The corrected private-caller candidate passes 36 host and 8 explicit-host private Python tests,
 including the unchanged original 23 tests, actual caller/source Bash execution,
@@ -287,6 +341,19 @@ remain unchanged.
 ## Concrete Steps
 
 
+For R1, before changing the helper run these methods against the original
+helper (expected nonzero, including real Git IPC and metadata mock exit 41):
+
+    python3 -B rust/scripts/test_check_tiforth_native_memory.py -v CredentialProtocolTests.test_actual_helper_and_git_fill_accept_authentication_challenges CredentialProtocolTests.test_actual_challenge_empty_array_reset_and_values_remain_literal CredentialProtocolTests.test_actual_metadata_block_accepts_single_multiple_and_reset_challenges
+
+After the narrow helper change, run the same command (expected zero) and then
+the complete suite below (expected 42 tests). The metadata tests execute the
+actual workflow Bash body with mock Cargo; credential stdout stays in subprocess
+memory. They do not fetch a remote repository or run actual Cargo. Use the same
+Python interpreter for the test suite and child `python3` on PATH, or run the
+host's existing Python 3.9 with its existing `tomli`; do not mix standard-library
+parser paths across interpreters. No installation is needed for these controls.
+
 From the repository root, run the non-Cargo checks:
 
     PYTHONDONTWRITEBYTECODE=1 python3 -B rust/scripts/test_check_tiforth_native_memory.py -v
@@ -301,8 +368,8 @@ asset digest and the checksum file before extraction. `actionlint -version`
 must identify 1.7.12. The two empty optional linter flags disable integrations
 with external shellcheck/pyflakes executables, not actionlint's YAML/schema or
 GitHub context checks. Run against only this workflow; legacy workflows are
-outside this repair. Expect no actionlint diagnostics and 23 passing Python
-tests. On the original exact `29073fbc4e34a82a1e0176143adf3a119db29ef5`
+outside this repair. Expect no actionlint diagnostics and 42 passing Python
+tests, including the original 23. On the original exact `29073fbc4e34a82a1e0176143adf3a119db29ef5`
 workflow, actionlint must exit nonzero for the three job-level `runner` contexts.
 
 Python 3.11 or later uses standard-library `tomllib`; older Python 3.9/3.10 needs
@@ -413,3 +480,9 @@ cross-repository orchestration only. Preserve real Git TiForth
 lockfile, nightly/resource limits and all required native checks. No memory
 architecture, dependency, allocator, threshold, visibility or repository-setting
 change is authorized here. Framework/memory/owner gates remain open.
+
+Revision note (2026-11-16, R1): Preserve exact reviewed H/T and original failures;
+allow only validated `wwwauth[]` metadata, add real local Git IPC and actual
+metadata-block red/green controls, and retain fresh new-pair review, separate
+verification, native/Linux and owner obligations. Exactly three host products
+change; workflow and dependency/native Rust source remain unchanged.

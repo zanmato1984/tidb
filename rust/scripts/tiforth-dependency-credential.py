@@ -27,6 +27,11 @@ def main(argv=None):
             key, value = line[:-1].decode("utf-8").split("=", 1)
         except (UnicodeError, ValueError):
             return 1
+        # Git may send repeated HTTP authentication challenges (or an empty
+        # array reset). They are metadata, never credential target identity.
+        # Ignore only after the same syntax and input bounds as every field.
+        if key == "wwwauth[]":
+            continue
         if key in fields or key not in {"protocol", "host", "path", "username"}:
             return 1
         fields[key] = value

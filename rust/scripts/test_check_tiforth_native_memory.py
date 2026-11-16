@@ -608,5 +608,145 @@ print(json.dumps(METADATA))
         self.assertEqual(sorted(p.name for p in logs.iterdir()), ["identity.log", "metadata.json", "metadata.stderr.log"])
 
 
+    def challenge_request(self, challenges, protocol="https", host="github.com", path="zanmato1984/tiforth"):
+        return self.request(protocol, host, path).replace(
+            "\n\n", "\n" + "".join("wwwauth[]=" + value + "\n" for value in challenges) + "\n")
+
+    def test_actual_helper_and_git_fill_accept_authentication_challenges(self):
+        challenges = [('Basic realm="GitHub"',),
+                      ('Basic realm="GitHub"', 'Bearer realm="GitHub", error="invalid_token"')]
+        for path in ("zanmato1984/tiforth", "zanmato1984/tiforth.git"):
+            for values in challenges:
+                for git in (False, True):
+                    with self.subTest(path=path, challenge_count=len(values), git=git):
+                        result = self.invoke(self.challenge_request(values, path=path), git=git)
+                        self.assert_secret(result)
+                        if not git:
+                            self.assertTrue(result.stdout == "username=x-access-token\npassword=" + self.token + "\n\n",
+                                            "unexpected helper output; streams withheld")
+
+    def test_actual_challenge_empty_array_reset_and_values_remain_literal(self):
+        values = ('Basic realm="GitHub"', '', 'Bearer realm="a=b";$(touch CHALLENGE_EXECUTED);`false`', '')
+        for challenges in (('',), values):
+            for git in (False, True):
+                with self.subTest(challenge_count=len(challenges), git=git):
+                    result = self.invoke(self.challenge_request(challenges), git=git)
+                    self.assert_secret(result)
+                    if not git:
+                        self.assertFalse('wwwauth' in result.stdout, "metadata echoed by helper")
+        self.assertFalse((self.root / "CHALLENGE_EXECUTED").exists())
+
+    def test_actual_challenges_do_not_relax_helper_or_git_target_gate(self):
+        challenges = ('Basic realm="GitHub"', '', 'host=github.com;path=zanmato1984/tiforth')
+        for protocol, host, path in (("http", "github.com", "zanmato1984/tiforth"),
+                                     ("ssh", "github.com", "zanmato1984/tiforth"),
+                                     ("https", "github.com.evil", "zanmato1984/tiforth"),
+                                     ("https", "github.com:443", "zanmato1984/tiforth"),
+                                     ("https", "github.com", "other/tiforth"),
+                                     ("https", "github.com", "zanmato1984/tiforth.git/extra")):
+            for git in (False, True):
+                with self.subTest(protocol=protocol, host=host, path=path, git=git):
+                    self.assert_rejected(self.invoke(self.challenge_request(challenges, protocol, host, path), git=git))
+
+    def test_actual_challenges_keep_identity_syntax_action_and_input_bounds_fail_closed(self):
+        request = self.challenge_request(('Basic realm="GitHub"',))
+        for key in ("protocol", "host", "path"):
+            lines = request.splitlines(keepends=True)
+            identity = next(line for line in lines if line.startswith(key + "="))
+            self.assert_rejected(self.invoke(request.replace(identity, "", 1)))
+            self.assert_rejected(self.invoke(request.replace("\n\n", "\n" + identity + "\n")))
+        for action in ("store", "erase", "", "get;false"):
+            self.assert_rejected(self.invoke(request, action=action))
+        for extra in ("username=a\nusername=b\n", "unknown=value\n", "wwwauth=value\n",
+                      "wwwauth[]\n", "wwwauth[]=bad\rvalue\n", "wwwauth[]=bad\0value\n"):
+            self.assert_rejected(self.invoke(request.replace("\n\n", "\n" + extra + "\n")))
+        self.assert_rejected(self.invoke(request.rstrip("\n")))
+        # Three identities plus 28 challenge lines fit; 32 fields never fit.
+        self.assert_secret(self.invoke(self.challenge_request(('x',) * 28)))
+        self.assert_rejected(self.invoke(self.challenge_request(('x',) * 29)))
+        # A line includes key, '=', value and terminating newline in its bound.
+        self.assert_secret(self.invoke(self.challenge_request(('x' * 4085,))))
+        self.assert_rejected(self.invoke(self.challenge_request(('x' * 4086,))))
+        invalid = subprocess.run([sys.executable, "-B", str(self.helper), "get"],
+                                 input=request.encode().replace(b'Basic', b'\xff'), cwd=self.root,
+                                 env=self.env, capture_output=True)
+        self.assertNotEqual(invalid.returncode, 0)
+        self.assertTrue(invalid.stdout == b"" and invalid.stderr == b"", "malformed input emitted output")
+
+    def metadata_challenge_probe(self, request):
+        # Execute the unchanged literal workflow body; only Cargo is a mock.
+        with tempfile.TemporaryDirectory(prefix="challenge-metadata-", dir=self.root) as tmp:
+            root = Path(tmp)
+            workspace = root / "rust"
+            for rel in ("Cargo.toml", "Cargo.lock", f"crates/{guard.BRIDGE}/Cargo.toml",
+                        f"crates/{guard.SERVER}/Cargo.toml"):
+                target = workspace / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(SOURCE / rel, target)
+            scripts = workspace / "scripts"
+            scripts.mkdir()
+            shutil.copyfile(GUARD_PATH, scripts / GUARD_PATH.name)
+            shutil.copyfile(self.helper, scripts / self.helper.name)
+            binary = root / "bin"
+            binary.mkdir()
+            cargo = binary / "cargo"
+            probe = """import json,os,subprocess,sys
+assert sys.argv[1:] == ['+nightly-2026-08-22', 'metadata', '--locked', '--format-version', '1']
+assert os.environ['CARGO_NET_GIT_FETCH_WITH_CLI'] == 'true'
+assert os.environ['GIT_CONFIG_COUNT'] == '3'
+r = subprocess.run(['git', 'credential', 'fill'], input=os.environ['MOCK_CREDENTIAL_REQUEST'],
+                   capture_output=True, text=True)
+token = os.environ['TIFORTH_DEPENDENCY_TOKEN']
+if r.returncode:
+    assert token not in r.stdout + r.stderr and 'password=' not in r.stdout, 'rejection leaked credential'
+    print('mock Cargo: Git credential IPC rejected; streams withheld', file=sys.stderr)
+    sys.exit(41)
+assert 'password=' + token + '\\n' in r.stdout, 'credential mismatch; streams withheld'
+assert token not in r.stderr, 'credential leaked'
+print(json.dumps(METADATA))
+""".replace("METADATA", repr(synthetic_metadata(workspace)))
+            cargo.write_text("#!" + sys.executable + "\n" + probe)
+            cargo.chmod(0o755)
+            logs = root / "logs"
+            logs.mkdir()
+            env = dict(self.env, PATH=str(binary) + os.pathsep + self.env['PATH'],
+                       NATIVE_MEMORY_LOGS=str(logs), MOCK_CREDENTIAL_REQUEST=request)
+            for key in list(env):
+                if key.startswith('GIT_CONFIG_KEY_') or key.startswith('GIT_CONFIG_VALUE_') or key == 'GIT_CONFIG_COUNT':
+                    env.pop(key)
+            result = subprocess.run(['bash', '--noprofile', '--norc', '-c',
+                                     run_blocks()['Check locked native dependency identities']],
+                                    cwd=workspace, env=env, capture_output=True, text=True)
+            self.assertFalse(self.token in result.stdout + result.stderr, 'credential leaked in shell diagnostics')
+            for path in root.rglob('*'):
+                if path.is_file():
+                    self.assertFalse(self.token.encode() in path.read_bytes(), 'credential leaked to sandbox file')
+            if result.returncode == 0:
+                self.assertTrue(json.loads((logs / 'identity.log').read_text())['metadata_checked'])
+            else:
+                self.assertFalse((logs / 'identity.log').exists(), 'guard ran after rejected authentication')
+                self.assertEqual((logs / 'metadata.json').read_text(), '')
+                self.assertIn('Git credential IPC rejected', (logs / 'metadata.stderr.log').read_text())
+            self.assertFalse((self.root / 'global-config').exists())
+            return result.returncode
+
+    def test_actual_metadata_block_accepts_single_multiple_and_reset_challenges(self):
+        for path in ('zanmato1984/tiforth', 'zanmato1984/tiforth.git'):
+            for challenges in (('Basic realm="GitHub"',),
+                               ('Basic realm="GitHub"', 'Bearer realm="a=b"'),
+                               ('', 'Basic realm="a=b";$(touch CHALLENGE_EXECUTED);`false`')):
+                with self.subTest(path=path, challenge_count=len(challenges)):
+                    self.assertEqual(self.metadata_challenge_probe(self.challenge_request(challenges, path=path)), 0)
+        self.assertFalse((self.root / 'CHALLENGE_EXECUTED').exists())
+
+    def test_actual_metadata_block_rejects_wrong_targets_with_challenges(self):
+        for protocol, host, path in (('http', 'github.com', 'zanmato1984/tiforth'),
+                                     ('https', 'github.com.evil', 'zanmato1984/tiforth'),
+                                     ('https', 'github.com', 'other/tiforth')):
+            with self.subTest(protocol=protocol, host=host, path=path):
+                request = self.challenge_request(('Basic realm="GitHub"', 'Bearer realm="a=b"'), protocol, host, path)
+                self.assertEqual(self.metadata_challenge_probe(request), 41)
+
+
 if __name__ == "__main__":
     unittest.main()
