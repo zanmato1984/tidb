@@ -23,6 +23,8 @@ tidb-datatype = { path = "../tidb-datatype" }
 tracing = "0.1"
 
 [dev-dependencies]
+tidb-config = { path = "../tidb-config" }
+tempfile.workspace = true
 tidb-codec = { path = "../tidb-codec" }
 tidb-build-tags = { path = "../tidb-build-tags", features = ["testexport"] }
 

@@ -5058,10 +5058,12 @@ name = "tidb-chunk"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "tempfile",
  "tidb-build-tags",
  "tidb-charset",
  "tidb-checksum",
  "tidb-codec",
+ "tidb-config",
  "tidb-datatype",
  "tidb-disjointset",
  "tidb-disk",

@@ -66,17 +66,37 @@ mod tests_codec;
 pub use column_slot::{ColumnHandle, ColumnRead, ColumnRef, ColumnWrite};
 pub use column_view::{CellBytes, ColumnBytes};
 
-/// The spill tests all point the process-wide temporary-storage path at their
-/// own scratch directory, so exactly one of them may run at a time. ONE lock
-/// for the whole crate: a per-module lock does not serialise modules against
-/// each other, which is how a test in one module used to delete the directory
-/// another was writing into.
+#[cfg(test)]
+mod test_temp_storage_process_tests;
+
+/// Test-only storage authorities. Each process configures one private global
+/// temporary path before any fixture can reach the disk initializer; ordinary
+/// tests within the process still run concurrently.
 #[cfg(test)]
 pub(crate) mod test_temp_storage {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, OnceLock};
 
     use tidb_spill_storage::{SpillEncryptionMethod, SpillStorage, SpillStorageSpec};
+
+    fn configure_process_temp_storage() {
+        // Retain the owned parent for the process lifetime, but do not create
+        // its child: the first real Chunk spill must initialize it and acquire
+        // the production directory lock cold. OnceLock guards configuration
+        // publication only, not test execution or I/O.
+        static ROOT: OnceLock<tempfile::TempDir> = OnceLock::new();
+        ROOT.get_or_init(|| {
+            let root = tempfile::Builder::new()
+                .prefix(&format!("tidb-chunk-process-{}-", std::process::id()))
+                .tempdir()
+                .expect("create process temporary-storage parent");
+            let path = root.path().join("global");
+            tidb_config::config_tree::config::update_global(|config| {
+                config.temp_storage_path = path.to_string_lossy().into_owned();
+            });
+            root
+        });
+    }
 
     /// One plaintext authority shared by ordinary unit tests. Production never
     /// has an implicit process fallback; this exists only to keep test setup
@@ -102,6 +122,7 @@ pub(crate) mod test_temp_storage {
         encryption: SpillEncryptionMethod,
         quota_bytes: i64,
     ) -> Arc<SpillStorage> {
+        configure_process_temp_storage();
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let ordinal = NEXT.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
