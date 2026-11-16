@@ -19,6 +19,27 @@ This is not an Arrow route, SQL integration, global hook, or process RSS limit.
 ## Progress
 
 
+- [x] (2026-11-16, admission-test R1) Confirm the independently reviewed
+  two-stage nonblocking counterexample against actual pinned dependency source.
+- [x] (2026-11-16, admission-test R1) Correct the simultaneous race to require
+  at most one winner, exact Denied/Contended failures, and fully drained credit;
+  retain a distinct deterministic actual-owner/free-before-flush positive phase.
+- [x] (2026-11-16, admission-test R1) Force the zero-winner schedule with
+  synchronous channels in a scratch-derived actual dependency: unchanged old
+  test fails at runtime, corrected test passes, including its positive phase.
+- [x] (2026-11-16, admission-test R1) Restore the unmodified Git dependency
+  graph; pass locked bridge check, scoped formatting, strict Clippy and all
+  original 13 tests once, with two threads and zero retries.
+- [x] (2026-11-16, admission-test R1) Execute unchanged original Chunk strict
+  Clippy once; retain its exit 101 and the same 15 diagnostics. This is baseline
+  attribution, not a passed or waived strict check.
+- [ ] Independently review and separately verify the newly integrated exact
+  host/TiForth pair, including the required default-feature server build before
+  any push. This bounded builder does not perform or replace those checks.
+
+The following older R1 checklist concerns the production two-CAS release repair,
+not the later admission-test contract finding:
+
 - [x] (2026-11-16, R1 repair) Read the immutable repair brief and published
   required finding; checked the source-bound worker lease and project storage.
 - [x] (2026-11-16, R1 repair) Record the fixed total two-CAS requirement before
@@ -45,6 +66,40 @@ not acceptance of the R1 correction:
 
 ## Surprises & Discoveries
 
+
+The later admission-test R1 is a test-contract defect, not a production memory
+safety or over-admission finding. At host
+`834ac2e7d010ccdb386e7ee05c6f6c505b6abd18`, paired with TiForth
+`f95f0219d4cf18f0482f4857726ac5645467395c`, the actual Git dependency remains
+`9628339f697252d29eea885f2eac693f2673935d`. In that dependency,
+`OwnedQuery::try_allocate` reserves a grant using `QueryBudget::try_acquire`,
+then `AllocationContext::try_allocate` calls `AllocationGrant::begin`.
+Each operation separately tries the actual ledger lock with one compare-exchange.
+If A reserves all 64 pending bytes, B can hold that ledger while rejecting its
+own request as Denied, and A can lose the second acquisition as Contended.
+A then drops its abandoned grant and refunds all pending credit. Neither attempt
+has to enter the backend; zero successful allocations is permitted.
+
+This was initially a source scheduling counterexample only. A bounded native
+probe subsequently forced exactly that schedule using synchronous channels at
+those actual internal sites in a private derived copy of dependency 962. Its
+single-CAS InlineMutex and allocator algorithm stayed unchanged; no original
+checkout, product manifest or dependency was changed. The byte-identical old
+test compiled and failed at its exactly-one assertion (left 0, right 1; exit
+101). The corrected product test compiled and passed the same controlled
+zero-winner schedule (exit 0), observing pending/live/grants all zero and also
+passing the distinct deterministic native-owner phase. Derived instrumentation
+is causal regression evidence, not unmodified Git dependency qualification or
+an observed uninstrumented historical flake. The retained private repair report
+binds source, instrumentation, manifest, graph and raw-log hashes.
+
+The final uninstrumented owning bridge suite observed one concurrent winner and
+passed all 13 original tests. Its resolved metadata names the actual Git 962
+package, not the derived path. An actual once-only strict Clippy invocation on
+unchanged original host `f3f5b267c41c9f6d2466baaccff714214893782f` exited 101
+with the same 15 diagnostic messages and locations as the prior candidate
+failure; the affected source files are byte-identical. This attributes the
+failure but neither suppresses the lints nor makes strict Chunk Clippy pass.
 
 Published R1 (P2) found that the original release scan filtered envelope sizes
 but not epoch before read-modify-write. Three equal envelopes at epochs 1/2/3
@@ -75,6 +130,18 @@ bytes versus 36600 required), and the rebuilt current full suite passes.
 ## Decision Log
 
 
+Decision: distinguish capacity safety from progress in the nonblocking race.
+Accept zero or one winner, require every error to be Denied or Contended, and
+check exact root/query pending/live/grant counters and native entries/frees both
+after joining attempts and after cross-thread owner release. Then drop the
+original handles, verify final header free precedes host release, and explicitly
+flush the retained envelope. Establish a fresh epoch with a directly successful
+real allocation for the separate last-owner positive phase; dropping original
+root/query must still leave PendingOwners until that payload is physically freed.
+Rationale: two separate nonblocking stages do not guarantee a winner, while
+no-over-admission, no leaked credit and free-before-refund remain mandatory.
+Date/Author: 2026-11-16, assigned fresh admission-test repair builder.
+
 Decision: retain at most TWO strong CAS operations TOTAL per release callback,
 not per slot. Acquire-load and filter the unique matching epoch and eligible
 live/closing state before CAS; return after its single bounded claim sequence.
@@ -102,6 +169,29 @@ Date/Author: 2026-11-16, assigned builder.
 
 ## Outcomes & Retrospective
 
+
+Admission-test R1 builder outcome: only
+`rust/crates/tidb-tiforth-memory/tests/native_admission.rs` and this existing
+plan are products. The test retains its name and both simultaneous attempts;
+the bridge still has 3 unit and 10 integration tests. All other assertions,
+inputs and workloads are unchanged (scoped rustfmt also wrapped one existing
+cold-callback println without changing its literal or behavior). The race now
+validates exact accounting for either permitted winner count, and a separate
+deterministic phase requires an actual payload to outlive the dropped original
+handles, retain native credit, and free before release and explicit flush.
+
+Locked all-target/all-feature bridge check, scoped formatting and strict bridge
+Clippy passed. The owning nextest suite passed 13/13, zero skipped, once with two
+threads and zero retries, against unmodified dependency 962. The old-red/current-
+green controlled probe is separately identified as derived instrumentation.
+Actual unchanged-original Chunk strict Clippy failed with the same 15 diagnostics;
+that failure remains unresolved, not waived. No original Chunk test or fixture,
+production bridge/allocator/API, Cargo configuration, lockfile or dependency
+product changed. Full Chunk and default server builds were deliberately outside
+this bounded repair; separate exact integrated-pair review and verification,
+including the default-feature server build, remain required. No remote CI,
+foundation completion or owner gate is claimed. Earlier failures and evidence
+below remain historical and are not retroactively passed by this repair.
 
 R1 builder validation: the source-bound old release algorithm compiled with the
 unchanged regression and actual-CAS counting helper, then failed with exit 101:
@@ -164,6 +254,28 @@ pools; a managed callback may only touch pre-admitted fixed atomics.
 ## Plan of Work
 
 
+For the later admission-test R1, edit only the test
+`simultaneous_last_capacity_and_cross_thread_release` in
+`rust/crates/tidb-tiforth-memory/tests/native_admission.rs` and import Counters.
+Keep the true three-party barrier and two worker attempts. Measure at-most-one
+winner, exact errors, root/query counters and real native allocation/free totals.
+Retain the handles while releasing race results on another thread so their
+drained counters can be inspected; only then drop the handles and flush epoch 1.
+For epoch 2, allocate a payload directly, write identifiable bytes, close admission,
+drop root/query and require PendingOwners. Read and free that owner on another
+thread, assert final physical frees precede release, and require explicit flush
+before the native pool returns to persistent service credit alone.
+
+Retain an independent scratch-derived probe with synchronous channel coordination
+at actual dependency sites only. Run old and corrected test bytes once each
+under the same forced zero-winner schedule. Keep its graph/source identity
+distinct, then use byte-identical original workspace manifest/lock and actual
+Git dependency for final checks. Do not retry tests, sleep, serialize the suite,
+alter production admission behavior or infer native reproduction from a model.
+
+The following work describes earlier production changes, not new permission to
+edit those paths during the admission-test repair:
+
 For the R1 correction, first edit only release handling in
 `rust/crates/tidb-tiforth-memory/src/admission.rs`. Add test-only counting at
 the actual strong-CAS boundary and real-root tests with three identical
@@ -195,6 +307,31 @@ Only format new crate sources. Update this plan with actual results and limitati
 
 ## Concrete Steps
 
+
+For the admission-test repair, use the existing cache/target and exact environment
+specified below, and preserve the workspace manifests, lock and pinned dependency.
+Run the following from an owning bridge overlay of `rust/` whose other crates
+refer to the unchanged exact host source. All commands use actual
+`nightly-2026-08-22`; offline mode prevents accidental dependency fetches.
+
+    cargo +nightly-2026-08-22 check --locked --offline -p tidb-tiforth-memory --all-targets --all-features
+    rustfmt +nightly-2026-08-22 --edition 2024 --check crates/tidb-tiforth-memory/tests/native_admission.rs
+    cargo +nightly-2026-08-22 clippy --locked --offline -p tidb-tiforth-memory --all-targets --all-features --no-deps -- -D warnings
+    cargo +nightly-2026-08-22 nextest run --locked --offline -p tidb-tiforth-memory --all-features --test-threads 2 --retries 0 --success-output immediate --failure-output immediate
+
+Expect check/format/bridge Clippy exit 0, and 13 tests passed with zero skipped.
+Use a fresh task-owned TMPDIR for nextest. Record resolved locked metadata before
+the final suite; `tiforth-memory` must identify the actual Git revision 962.
+Separately, from unchanged original f3 host `rust/`, run exactly once:
+
+    cargo +nightly-2026-08-22 clippy --locked --offline -p tidb-chunk --all-targets --no-deps -- -D warnings
+
+The observed exit is 101 with 15 original-source diagnostics, not an expected
+success. Preserve the output and compare location/source hashes only after that
+actual invocation. Do not change the baseline or lock, suppress diagnostics,
+retry it, or call it passed. No full Chunk test or server build belongs to this
+bounded assignment. The following commands describe earlier creation/repair
+work; in particular generating the lock is not part of this admission-test task.
 
 From `rust/`, use the dispatch-provided existing CARGO_HOME and
 CARGO_TARGET_DIR, CARGO_BUILD_JOBS=2, CARGO_INCREMENTAL=0,
@@ -228,6 +365,18 @@ are referenced in the repair report; do not alter the original pinned source.
 
 ## Validation and Acceptance
 
+
+The concurrent last-capacity phase must accept either zero or one allocation,
+never two, and only Denied/Contended errors. After joined attempts, pending is
+zero and root/query live bytes and grant counts equal actual retained winners;
+real backend entries equal one header plus winners, with no frees yet. After
+cross-thread result release all query/root counters are zero and only the header
+remains. Dropping its last handles must free that header before host release;
+native quota stays charged until explicit flush. The distinct directly successful
+positive must survive dropped root/query, keep flush blocked, preserve payload
+bytes cross-thread, then physically free payload and header before release and
+explicit native refund. Both zero-winner and normal positive ownership paths
+were executed, with derived-probe versus final Git identities kept separate.
 
 The new tests must show denied capacity has no backend allocation entry, bytes
 remain usable after root/query/close request, cross-thread last free precedes
@@ -297,3 +446,9 @@ files are additive. Raw negative proof, original native binary and shared target
 are retained. Removed only the inactive derived negative source tree and own
 temporary files; measured project free-space recovery was 343388160 bytes
 (a net filesystem observation, not a universal per-file accounting claim).
+
+Admission-test revision: corrected the later nonblocking two-stage R1 without
+production changes; retained controlled actual-code old-red/current-green proof,
+qualified the 13-test bridge suite against unmodified Git 962 once, and recorded
+the actual unchanged-baseline strict Chunk Clippy failure without waiver.
+Fresh integrated-head independent review and separate verification remain required.

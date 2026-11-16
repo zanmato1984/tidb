@@ -5,7 +5,7 @@ use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::{Arc, Barrier};
 use tidb_tiforth_memory::tiforth_memory::{
-    AdmissionV1, MemoryError, MetadataPlan, MetadataSlabError, RawAllocator, SiteId,
+    AdmissionV1, Counters, MemoryError, MetadataPlan, MetadataSlabError, RawAllocator, SiteId,
 };
 use tidb_tiforth_memory::*;
 
@@ -408,14 +408,16 @@ fn cold_callbacks_and_close_allocate_nothing_with_allocating_positive_control() 
     );
     assert_eq!(SERVICE.allocator().snapshot().entries, 0);
     SERVICE.flush(1).unwrap();
-    println!("cold callback allocations reserve={first} close={close_allocs} release={release_allocs} denied={denied_allocs}; positive={observed}");
+    println!(
+        "cold callback allocations reserve={first} close={close_allocs} release={release_allocs} denied={denied_allocs}; positive={observed}"
+    );
 }
 
 #[test]
 fn simultaneous_last_capacity_and_cross_thread_release() {
     static SERVICE: Service = Service::new();
     let pool = initialize(&SERVICE);
-    register(&SERVICE, &pool, 1, 64);
+    let envelope = register(&SERVICE, &pool, 1, 64);
     let root: Root = SERVICE.try_root(1).unwrap();
     let query = Arc::new(root.open_query(64).unwrap());
     let barrier = Arc::new(Barrier::new(3));
@@ -430,13 +432,127 @@ fn simultaneous_last_capacity_and_cross_thread_release() {
     }
     barrier.wait();
     let results: Vec<_> = workers.into_iter().map(|h| h.join().unwrap()).collect();
-    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+    // Reservation and allocator-start each use a separate nonblocking ledger
+    // acquisition. A reserved grant can lose the second acquisition while the
+    // other attempt holds the ledger to deny capacity: zero winners is legal.
+    let winners = results.iter().filter(|r| r.is_ok()).count();
+    assert!(winners <= 1, "the last 64 bytes cannot be admitted twice");
+    for result in &results {
+        match result {
+            Ok(payload) => assert_eq!(payload.charge(), 64),
+            Err(error) => assert!(matches!(
+                error,
+                MemoryError::Denied | MemoryError::Contended
+            )),
+        }
+    }
+    let expected = Counters {
+        pending: 0,
+        live: 64 * winners,
+        grants: winners,
+    };
+    let audit = query.audit_snapshot();
+    assert_eq!(audit.root, expected);
+    assert_eq!(audit.query, Some(expected));
+    assert_eq!(root.audit_snapshot().root, expected);
+    assert_eq!(
+        SERVICE.allocator().snapshot(),
+        AllocatorSnapshot {
+            entries: 1 + winners, // One real header, plus accepted payloads only.
+            frees: 0,
+        }
+    );
+    assert_eq!(SERVICE.snapshot().releases, 0);
+    assert_eq!(SERVICE.flush(1), Err(BridgeError::PendingOwners));
+    assert_eq!(
+        pool.allocated(),
+        (Service::service_bytes() + envelope) as i64
+    );
+
+    // Retain the original handles to observe that all race grants, including
+    // abandoned pending grants, have drained after actual cross-thread frees.
+    std::thread::spawn(move || drop(results)).join().unwrap();
+    let audit = query.audit_snapshot();
+    assert_eq!(audit.root, Counters::default());
+    assert_eq!(audit.query, Some(Counters::default()));
+    assert_eq!(root.audit_snapshot().root, Counters::default());
+    assert_eq!(
+        SERVICE.allocator().snapshot(),
+        AllocatorSnapshot {
+            entries: 1 + winners,
+            frees: winners,
+        }
+    );
     drop(query);
     drop(root);
-    assert_eq!(SERVICE.flush(1), Err(BridgeError::PendingOwners));
-    std::thread::spawn(move || drop(results)).join().unwrap();
+    assert_eq!(SERVICE.allocator().snapshot().frees, 1 + winners);
+    assert_eq!(SERVICE.snapshot().releases, 1);
+    assert_eq!(SERVICE.snapshot().frees_at_last_release, 1 + winners);
+    assert_eq!(
+        pool.allocated(),
+        (Service::service_bytes() + envelope) as i64
+    );
     SERVICE.flush(1).unwrap();
     assert_eq!(pool.allocated(), Service::service_bytes() as i64);
+
+    // Distinct deterministic positive phase: establish an actual payload owner
+    // directly, never assume that the concurrent nonblocking attempts won.
+    let envelope = register(&SERVICE, &pool, 2, 64);
+    let root: Root = SERVICE.try_root(2).unwrap();
+    let query = root.open_query(64).unwrap();
+    let mut payload = query.try_allocate(Layout::new::<[u8; 64]>(), SITE).unwrap();
+    payload.as_mut_slice()[0..5].copy_from_slice(b"owned");
+    let expected = Counters {
+        pending: 0,
+        live: 64,
+        grants: 1,
+    };
+    assert_eq!(query.audit_snapshot().root, expected);
+    assert_eq!(query.audit_snapshot().query, Some(expected));
+    assert_eq!(root.audit_snapshot().root, expected);
+    assert_eq!(
+        SERVICE.allocator().snapshot(),
+        AllocatorSnapshot {
+            entries: 3 + winners,
+            frees: 1 + winners,
+        }
+    );
+    query.close_admission();
+    SERVICE.request_close(2).unwrap();
+    drop(query);
+    drop(root);
+    assert_eq!(SERVICE.flush(2), Err(BridgeError::PendingOwners));
+    assert_eq!(SERVICE.snapshot().releases, 1);
+    assert_eq!(
+        pool.allocated(),
+        (Service::service_bytes() + envelope) as i64
+    );
+    std::thread::spawn(move || {
+        assert_eq!(&payload.as_slice()[0..5], b"owned");
+        drop(payload); // Actual payload and final header frees precede release.
+    })
+    .join()
+    .unwrap();
+    assert_eq!(
+        SERVICE.allocator().snapshot(),
+        AllocatorSnapshot {
+            entries: 3 + winners,
+            frees: 3 + winners,
+        }
+    );
+    assert_eq!(SERVICE.snapshot().releases, 2);
+    assert_eq!(SERVICE.snapshot().frees_at_last_release, 3 + winners);
+    assert_eq!(
+        pool.allocated(),
+        (Service::service_bytes() + envelope) as i64
+    );
+    SERVICE.flush(2).unwrap();
+    assert_eq!(SERVICE.snapshot().flushes, 2);
+    assert_eq!(SERVICE.flush(2), Err(BridgeError::StaleEpoch));
+    assert_eq!(pool.allocated(), Service::service_bytes() as i64);
+    println!(
+        "last-capacity race winners={winners}; pending/live/grants drained; deterministic owner freed before release and flush"
+    );
 }
 
 #[test]
