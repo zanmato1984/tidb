@@ -71,6 +71,7 @@ members = [
     "crates/tidb-master-key",
     "crates/tidb-mathutil",
     "crates/tidb-memory",
+    "crates/tidb-tiforth-memory",
     "crates/tidb-memoryusagealarm",
     "crates/tidb-monotime",
     "crates/tidb-mvmap",
