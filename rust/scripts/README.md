@@ -3,6 +3,44 @@
 Operational tooling for the Rust workspace: real-TiKV runners, benchmarks,
 generators and audits.
 
+## Private TiForth dependency credential helper
+
+The native-memory workflow supplies its job token only to the locked metadata
+step. `tiforth-dependency-credential.py` handles only `get` for HTTPS
+`github.com/zanmato1984/tiforth` (with optional `.git`). It returns credentials
+over Git's private helper pipe, never writes a credential store, and rejects
+`store`/`erase`, unknown fields, malformed or duplicate identity fields, and
+requests beyond the existing line/count bounds. The token is read only after
+request validation and is unset before the identity guard runs.
+
+Git's HTTP authentication path advertises `capability[]=authtype` and
+`capability[]=state`; plain `git credential fill` does not add them by default.
+The helper accepts exactly these known advertisements as bounded metadata, like
+`wwwauth[]`, but does not echo capability support or accept negotiated
+`authtype`, `credential`, `ephemeral`, `state[]`, or `continue` values. No
+additional target, protocol, operation, or unknown capability is authorized.
+See the [Git credential protocol](https://git-scm.com/docs/git-credential) and
+[Git 2.56.1 HTTP implementation](https://github.com/git/git/blob/v2.56.1/http.c).
+
+Run the Python controls without Cargo or real credentials:
+
+```bash
+python3 -B rust/scripts/test_check_tiforth_native_memory.py -v
+```
+
+The HTTPS regression requires installed Git and OpenSSL. It creates a tiny
+synthetic repository and a one-use test certificate, and points Git only at a
+loopback CONNECT fixture that terminates TLS locally and never forwards traffic.
+It uses the exact HTTPS host/path request shape, exercises a real authenticated
+Git fetch, verifies the synthetic object ID, and checks missing-helper,
+missing-token and foreign-target failures. Its workflow-shell probe substitutes
+Cargo with a mock that invokes real Git; it also asserts token removal before
+the real metadata guard. Temporary repositories, certificate and server are
+cleaned up. These controls are not a real Cargo run, Linux qualification, or
+proof that a job token can fetch the private pinned dependency; those remain
+separate required CI evidence.
+
+
 ## Build and test commands
 
 Run Cargo from `rust/` so workspace configuration applies. Build/test

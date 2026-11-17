@@ -5058,10 +5058,12 @@ name = "tidb-chunk"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "tempfile",
  "tidb-build-tags",
  "tidb-charset",
  "tidb-checksum",
  "tidb-codec",
+ "tidb-config",
  "tidb-datatype",
  "tidb-disjointset",
  "tidb-disk",
@@ -10253,6 +10255,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "tidb-tiforth-memory"
+version = "0.0.0"
+dependencies = [
+ "tidb-memory",
+ "tiforth-memory",
+ "tikv-jemalloc-sys",
+ "tikv-jemallocator",
+]
+
+[[package]]
 name = "tidb-tikvutil"
 version = "0.0.0"
 
@@ -10845,6 +10857,11 @@ dependencies = [
 [[package]]
 name = "tidb-zeropool"
 version = "0.0.0"
+
+[[package]]
+name = "tiforth-memory"
+version = "0.1.0"
+source = "git+https://github.com/zanmato1984/tiforth?rev=9628339f697252d29eea885f2eac693f2673935d#9628339f697252d29eea885f2eac693f2673935d"
 
 [[package]]
 name = "tikv-client"
