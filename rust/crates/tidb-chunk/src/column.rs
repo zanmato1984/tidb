@@ -242,6 +242,16 @@ impl Column {
         self.data.capacity()
     }
 
+    /// Returns the visible packed element bytes without copying if their backing
+    /// is already immutable. Mutable storage is left unchanged and returns `None`.
+    ///
+    /// The bytes remain valid after the column changes or is dropped. The handle
+    /// does not itself establish or transfer a memory quota charge.
+    #[must_use]
+    pub fn frozen_data(&self) -> Option<bytes::Bytes> {
+        self.data.frozen_slice()
+    }
+
     /// Go allocator's `cap(col.elemBuf)` type-eligibility check.
     #[must_use]
     pub(crate) fn elem_buffer_capacity(&self) -> usize {

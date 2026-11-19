@@ -108,6 +108,13 @@ impl SharedBytes {
         self.len
     }
 
+    pub(crate) fn frozen_slice(&self) -> Option<bytes::Bytes> {
+        match &self.backing {
+            Backing::Frozen(bytes) => Some(bytes.slice(self.start..self.start + self.len)),
+            Backing::Owned(_) | Backing::Shared(_) => None,
+        }
+    }
+
     pub(crate) fn capacity(&self) -> usize {
         match &self.backing {
             Backing::Owned(bytes) => bytes.capacity().saturating_sub(self.start),
